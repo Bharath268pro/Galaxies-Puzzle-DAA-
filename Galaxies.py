@@ -344,6 +344,32 @@ class SymmetryValidator:
         return dots_found
     
 
+    def is_valid_region_with_dp(self, region_cells, dot_x, dot_y, dots, n):
+        """
+        OPTIMIZED VALIDATION using DP memoization:
+        Check if region is valid with cached symmetry checks.
+        
+        Combines both memoization strategies:
+        1. Check dot count using memoized dot lookup
+        2. Check symmetry using memoized symmetry check
+        
+        TC: O(1) with cache hits, O(R + D) without
+        SC: O(R + D) amortized per region
+        """
+        # Convert to frozenset for hashing
+        region_frozen = frozenset(region_cells)
+        
+        # Check dot count using memoized lookup
+        dots_in_region = self.memoized_dots_in_region(region_frozen, dots)
+        if len(dots_in_region) != 1:
+            return False
+        
+        # Check if dot is at grid intersection
+        if not (int(dot_x) in [x for x, y in region_cells] and int(dot_y) in [y for x, y in region_cells]):
+            return False
+        
+        # Check symmetry with memoization
+        return self.memoized_symmetry_check(region_frozen, dot_x, dot_y, n)
     
     def get_stats(self):
         """Return cache performance statistics."""
