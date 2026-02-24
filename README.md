@@ -68,5 +68,3 @@ python galaxies.py
 * **Right Drag (Off-Grid):** Remove an existing marker arrow.
 
 ---
-
-Would you like me to add a section to this README specifically detailing the custom utility functions (like `my_sorted` and `my_enumerate`) that power the algorithms?
