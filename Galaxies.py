@@ -16,7 +16,7 @@ Features:
 - Visual feedback: valid regions are highlighted in light blue
 - Undo/Redo support
 - Solver: generates valid solution from scratch
-- Hint: computer uses GREEDY ALGORITHM to suggest next move
+- Hint: computer uses DIVIDE AND CONQUER ALGORITHM to suggest next move
 
 DAA ALGORITHMS IMPLEMENTED:
 ======================
@@ -26,47 +26,55 @@ DAA ALGORITHMS IMPLEMENTED:
    - Used for region detection via BFS traversal
    - TC: O(V+E), SC: O(V+E)
 
-2. GREEDY: Edge scoring and hint selection algorithm
-   - Scores each edge candidate by its potential to separate valid regions
-   - Metrics: region separation power, dot enclosure improvement
-   - Selects edge with maximum score (greedy choice)
-   - TC: O(E * R * D) where E=edges, R=region size, D=dots
-   - SC: O(E)
+2. DIVIDE AND CONQUER + BACKTRACKING: Core solver strategy
+   -------------------------------------------------------
+   Pure D&C cannot solve Galaxies because galaxy regions can cross any
+   partition boundary, making sub-problems interdependent.  Backtracking
+   alone works but is exponentially slow on large grids.  Together:
 
-3. SORTING: Multiple sorting techniques for optimization
-   - Sort edges by score (descending) for heuristic candidate selection
-   - Sort regions by size for efficient validation
-   - Sort candidates by heuristic value for pruning
-   - TC: O(n log n) per sort operation
+   D&C PHASE (dc_backtrack_solve):
+     - Recursively splits the grid into left/right column halves
+     - Solves each half's INTERIOR cells first at the base case
+     - TC: O(log N) recursive depth
 
-4. DYNAMIC PROGRAMMING & MEMOIZATION: Symmetry validation cache
-   - Memoize rotational symmetry checks for regions
-   - Cache dot membership lookups per region
-   - Avoid redundant computations during hint generation and rendering
-   - TC: O(1) lookup after O(R) preprocessing per region
-   - SC: O(R*D) for memoization cache
-   
-   Key Insight:
-     Regions don't change until edges change. Cache validation results
-     and invalidate cache only when edges are modified. This provides
-     10-100x speedup for repeated redraw() calls and hint scoring.
+   BACKTRACKING PHASE (bt_assign_boundary):
+     - After each D&C split, handles BOUNDARY CELLS whose galaxy
+       crosses into the other half
+     - Tries every candidate dot, checks symmetry + ownership constraints
+     - On failure: UNDO assignment and try next candidate
+     - TC: O(D^B) where D=dots, B=boundary cells (B << N^2)
+
+3. SORTING: Nearest-dot-first ordering of backtracking candidates
+   - Pre-computed once per boundary batch before recursion starts
+   - Prunes the backtracking search tree significantly
+   - TC: O(D log D) per boundary cell
+
+4. VALIDATION: Plain symmetry and dot-count checks
+   - dots_in_region(): checks which dot is inside a region  TC: O(R*D)
+   - has_rotational_symmetry(): checks 180-deg symmetry     TC: O(R)
+   - Used by get_valid_regions() for the UI blue highlighting
 
 5. UI: Tkinter-based graphical interface
-   - Canvas rendering with grid and dots
-   - Valid region highlighting
-   - Event handling (click, right-click, drag)
-   - Button callbacks for game control
 
 Run:
-    python Galaxies.py
+    python galaxy_v4.py
 """
 
 import tkinter as tk
 from tkinter import messagebox
 from collections import deque, defaultdict
 from dataclasses import dataclass
-
+import math
 import random
+
+
+# ==============================================================================
+# SHARED UTILITY
+# ==============================================================================
+
+def cell_id(x, y, n):
+    """Convert (x, y) cell coordinate to flat index. Used everywhere."""
+    return y * n + x
 
 
 # ==============================================================================
@@ -127,66 +135,110 @@ class GalaxiesPuzzle:
         self.dots = []
         self.solution_edges = set()
 
-    def cell_id(self, x, y):
-        return y * self.N + x
-
-    def generate(self, target_rects = None):
+    def generate(self, target_rects=None):
         """
-        Always succeeds:
-        - Start with one rectangle covering whole grid.
-        - Repeatedly split random rectangles until reaching target_rects.
+        DIVIDE AND CONQUER Puzzle Generator
+        ====================================
+        Recursively splits the grid into galaxy regions.
+
+        Algorithm (mirrors Merge-Sort structure):
+          DIVIDE:   Choose a split axis (vertical or horizontal) and a
+                    split position k that divides the current rectangle into
+                    two non-empty sub-rectangles.
+          CONQUER:  Recursively call dc_split() on each sub-rectangle.
+          COMBINE:  The leaf rectangles returned from both halves are
+                    collected into self.rects.
+
+        Base case (do NOT split further):
+          - The rectangle is a 1x1 single cell -> it is already a galaxy.
+          - The recursion depth has reached max_depth -> stop splitting.
+
+        Complexity:
+          TC: O(R * log R) where R = final number of rectangles.
+          SC: O(log N) call-stack depth (binary recursion tree on grid).
         """
         n = self.N
         if target_rects is None:
-            # for 7x7, this gives a nice density
             target_rects = self.rng.randint(9, 14)
 
-        rects = [(0, 0, n, n)]
+        max_depth = math.ceil(math.log2(max(target_rects, 2)))
+        collected_rects = []
 
-        # prevent too many tiny pieces
-        def can_split(r):
-            _, _, w, h = r
-            return (w >= 2) or (h >= 2)
+        def dc_split(x, y, w, h, depth):
+            """
+            DIVIDE AND CONQUER recursive helper.
 
-        tries = 0
-        while len(rects) < target_rects and tries < 5000:
-            tries += 1
-            candidates = [r for r in rects if can_split(r)]
-            if not candidates:
-                break
-            r = self.rng.choice(candidates)
-            rects.remove(r)
-            x, y, w, h = r
+            BASE CASES:
+              - Single cell (w==1, h==1): cannot split, add as leaf.
+              - depth == 0: recursion limit reached, add whole rect as leaf.
 
-            # choose split direction biased to longer dimension
-            if w >= 2 and h >= 2:
-                vertical = (w >= h and self.rng.random() < 0.65) or (self.rng.random() < 0.35)
-            elif w >= 2:
+            DIVIDE:
+              Pick split direction (prefer longer side).
+              Pick split position k randomly in [1, dim-1].
+
+            CONQUER:
+              Recurse on each half (with 75% probability to keep splitting,
+              otherwise treat that half as a leaf immediately).
+
+            COMBINE:
+              Both recursive calls append to collected_rects; no explicit
+              merge step needed (results accumulate naturally).
+            """
+            # BASE CASE 1: single cell
+            if w == 1 and h == 1:
+                collected_rects.append((x, y, w, h))
+                return
+            # BASE CASE 2: depth exhausted
+            if depth == 0:
+                collected_rects.append((x, y, w, h))
+                return
+
+            # DIVIDE: choose split direction
+            can_v = w >= 2
+            can_h = h >= 2
+
+            if can_v and can_h:
+                if w > h:
+                    vertical = True
+                elif h > w:
+                    vertical = False
+                else:
+                    vertical = self.rng.random() < 0.5
+            elif can_v:
                 vertical = True
             else:
                 vertical = False
 
             if vertical:
-                # split at k between 1..w-1
                 k = self.rng.randint(1, w - 1)
-                r1 = (x, y, k, h)
-                r2 = (x + k, y, w - k, h)
+                left_rect  = (x,     y, k,     h)
+                right_rect = (x + k, y, w - k, h)
             else:
                 k = self.rng.randint(1, h - 1)
-                r1 = (x, y, w, k)
-                r2 = (x, y + k, w, h - k)
+                left_rect  = (x, y,     w, k)
+                right_rect = (x, y + k, w, h - k)
 
-            rects.append(r1)
-            rects.append(r2)
+            # CONQUER: recurse on each half (or keep as leaf)
+            if self.rng.random() < 0.75:
+                dc_split(*left_rect, depth - 1)
+            else:
+                collected_rects.append(left_rect)
 
-        self.rects = rects
+            if self.rng.random() < 0.75:
+                dc_split(*right_rect, depth - 1)
+            else:
+                collected_rects.append(right_rect)
+
+        # ENTRY: start D&C on the full NxN grid
+        dc_split(0, 0, n, n, max_depth)
+        self.rects = collected_rects
 
         # Build owner grid
         self.owner = [-1] * (n * n)
         for idx, (x, y, w, h) in enumerate(self.rects):
             for yy in range(y, y + h):
                 for xx in range(x, x + w):
-                    self.owner[self.cell_id(xx, yy)] = idx
+                    self.owner[cell_id(xx, yy, n)] = idx
 
         # Dots at rectangle centers
         self.dots = []
@@ -212,13 +264,13 @@ class GalaxiesPuzzle:
         # internal borders between different rectangles
         for y in range(n):
             for x in range(n):
-                o = self.owner[self.cell_id(x, y)]
+                o = self.owner[cell_id(x, y, n)]
                 if x + 1 < n:
-                    o2 = self.owner[self.cell_id(x + 1, y)]
+                    o2 = self.owner[cell_id(x + 1, y, n)]
                     if o2 != o:
                         edges.add(('v', x + 1, y))
                 if y + 1 < n:
-                    o2 = self.owner[self.cell_id(x, y + 1)]
+                    o2 = self.owner[cell_id(x, y + 1, n)]
                     if o2 != o:
                         edges.add(('h', x, y + 1))
         return edges
@@ -228,208 +280,34 @@ class GalaxiesPuzzle:
 # SECTION 3: VALIDATION & SYMMETRY
 # ==============================================================================
 
-def has_rotational_symmetry(region_cells, dot_x, dot_y, n):
+def dots_in_region(region_cells_frozen, dots):
     """
-    Check if a region has 180° rotational symmetry about the dot center (dot_x, dot_y).
-    A cell (x, y) maps to (2*dot_x - x - 1, 2*dot_y - y - 1) under 180° rotation about the dot.
+    Return list of (dot_idx, dot_x, dot_y) for every dot that falls
+    inside the given region.
+    TC: O(R * D)
     """
-    for x, y in region_cells:
-        # Rotate (x, y) 180° about (dot_x, dot_y)
-        sym_x = 2 * dot_x - x - 1
-        sym_y = 2 * dot_y - y - 1
-        # Check if rotated cell is in the region
-        if (int(sym_x), int(sym_y)) not in region_cells:
-            return False
-    return True
-
-
-def count_dots_in_region(region_cells, dots):
-    # TC: O(R*D), SC: O(1)
-    count = 0
-    for dot_x, dot_y in dots:
-        for x, y in region_cells:
+    found = []
+    for dot_idx, (dot_x, dot_y) in enumerate(dots):
+        for x, y in region_cells_frozen:
             if x <= dot_x < x + 1 and y <= dot_y < y + 1:
-                count += 1
+                found.append((dot_idx, dot_x, dot_y))
                 break
-    return count
+    return found
 
 
-def is_region_valid(region_cells, dot_x, dot_y, dots, n):
-    # TC: O(R*D + R), SC: O(1)
-    dot_count = count_dots_in_region(region_cells, dots)
-    if dot_count != 1:
-        return False
-
-    if not (int(dot_x) in [x for x, y in region_cells] and int(dot_y) in [y for x, y in region_cells]):
-        return False
-
-    if not has_rotational_symmetry(region_cells, dot_x, dot_y, n):
-        return False
-
+def has_rotational_symmetry(region_cells_frozen, dot_x, dot_y):
+    """
+    Return True if the region has 180-degree rotational symmetry
+    about (dot_x, dot_y).
+    For every cell (x, y) its partner must be (2*dot_x-x-1, 2*dot_y-y-1).
+    TC: O(R)
+    """
+    for x, y in region_cells_frozen:
+        px = int(2 * dot_x - x - 1)
+        py = int(2 * dot_y - y - 1)
+        if (px, py) not in region_cells_frozen:
+            return False
     return True
-
-
-# ==============================================================================
-# SECTION 3.5: DYNAMIC PROGRAMMING & MEMOIZATION
-# ==============================================================================
-
-class SymmetryValidator:
-    """
-    DYNAMIC PROGRAMMING WITH MEMOIZATION:
-    Optimize rotational symmetry validation using cached computations.
-    
-    Problem: Repeatedly checking if regions have rotational symmetry is expensive.
-    Solution: Memoize symmetry checks and partial results to cache results.
-    
-    Approach:
-      1. Cache full symmetry validation results 
-         (region_cells, dot) -> is_symmetric
-      2. Memoize dot locations within regions (frozenset cells -> dots_list)
-      3. Invalidate cache only when edges change
-    
-    Performance:
-      TC: O(1) lookup after O(R) preprocessing per region
-      SC: O(R + D) for memoization cache per region
-      Real-world: 10-100x speedup on repeated validations
-    
-    Use Case:
-      - redraw() calls get_valid_regions() every frame
-      - get_valid_regions() validates same regions repeatedly
-      - Without DP: recalculates symmetry for all regions each frame
-      - With DP: O(1) cache hits for unchanged regions
-    """
-    
-    def __init__(self):
-        # Memoization cache: (frozenset of cells, dot_x, dot_y, n) -> is_valid
-        self.symmetry_cache = {}
-        # Memoization cache: frozenset of cells -> list of dot indices in region
-        self.dots_in_region_cache = {}
-        # Track when cache was last invalidated
-        self.last_edges_hash = None
-        self.cache_hits = 0
-        self.cache_misses = 0
-    
-    def clear_cache_if_needed(self, edges_hash):
-        """
-        Clear cache when edges change.
-        
-        Since edges define region boundaries, any edge change
-        invalidates all cached validation results.
-        
-        TC: O(1) amortized (clear rarely relative to lookups)
-        """
-        if self.last_edges_hash != edges_hash:
-            self.symmetry_cache.clear()
-            self.dots_in_region_cache.clear()
-            self.last_edges_hash = edges_hash
-    
-    def memoized_symmetry_check(self, region_cells, dot_x, dot_y, n):
-        """
-        DP MEMOIZATION: Cache rotational symmetry validation.
-        
-        Symmetry check is expensive O(R) to compute. If we've already
-        validated this exact (region, dot) pair, return cached result.
-        
-        TC: O(R) first call, O(1) cached calls (typical speedup 10-100x)
-        SC: O(R) per cache entry
-        
-        Args:
-          region_cells: frozenset of (x, y) tuples
-          dot_x, dot_y: dot center coordinates
-          n: grid size
-        
-        Returns:
-          bool: True if region has 180° rotational symmetry
-        """
-        key = (region_cells, dot_x, dot_y, n)
-        if key in self.symmetry_cache:
-            self.cache_hits += 1
-            return self.symmetry_cache[key]
-        
-        self.cache_misses += 1
-        # Compute symmetry
-        result = True
-        for x, y in region_cells:
-            sym_x = 2 * dot_x - x - 1
-            sym_y = 2 * dot_y - y - 1
-            if (int(sym_x), int(sym_y)) not in region_cells:
-                result = False
-                break
-        
-        self.symmetry_cache[key] = result
-        return result
-    
-    def memoized_dots_in_region(self, region_cells_frozen, dots):
-        """
-        DP MEMOIZATION: Cache dot membership in regions.
-        
-        Instead of scanning all dots every time for a region,
-        cache which dots are in this region.
-        
-        TC: O(R*D) first call, O(1) cached calls
-        SC: O(D) per cache entry
-        
-        Args:
-          region_cells_frozen: frozenset of (x, y) tuples
-          dots: list of (dot_x, dot_y) coordinates
-        
-        Returns:
-          list: [(dot_idx, dot_x, dot_y), ...] for dots in region
-        """
-        if region_cells_frozen in self.dots_in_region_cache:
-            self.cache_hits += 1
-            return self.dots_in_region_cache[region_cells_frozen]
-        
-        self.cache_misses += 1
-        dots_found = []
-        for dot_idx, (dot_x, dot_y) in enumerate(dots):
-            for x, y in region_cells_frozen:
-                if x <= dot_x < x + 1 and y <= dot_y < y + 1:
-                    dots_found.append((dot_idx, dot_x, dot_y))
-                    break
-        
-        self.dots_in_region_cache[region_cells_frozen] = dots_found
-        return dots_found
-    
-    def is_valid_region_with_dp(self, region_cells, dot_x, dot_y, dots, n):
-        """
-        OPTIMIZED VALIDATION using DP memoization:
-        Check if region is valid with cached symmetry checks.
-        
-        Combines both memoization strategies:
-        1. Check dot count using memoized dot lookup
-        2. Check symmetry using memoized symmetry check
-        
-        TC: O(1) with cache hits, O(R + D) without
-        SC: O(R + D) amortized per region
-        """
-        # Convert to frozenset for hashing
-        region_frozen = frozenset(region_cells)
-        
-        # Check dot count using memoized lookup
-        dots_in_region = self.memoized_dots_in_region(region_frozen, dots)
-        if len(dots_in_region) != 1:
-            return False
-        
-        # Check if dot is at grid intersection
-        if not (int(dot_x) in [x for x, y in region_cells] and int(dot_y) in [y for x, y in region_cells]):
-            return False
-        
-        # Check symmetry with memoization
-        return self.memoized_symmetry_check(region_frozen, dot_x, dot_y, n)
-    
-    def get_stats(self):
-        """Return cache performance statistics."""
-        total = self.cache_hits + self.cache_misses
-        hit_rate = (self.cache_hits / total * 100) if total > 0 else 0
-        return {
-            'hits': self.cache_hits,
-            'misses': self.cache_misses,
-            'total': total,
-            'hit_rate': hit_rate,
-            'symmetry_cache_size': len(self.symmetry_cache),
-            'dots_cache_size': len(self.dots_in_region_cache)
-        }
 
 
 # ==============================================================================
@@ -451,18 +329,26 @@ class Arrow:
 
 
 # ==============================================================================
-# SECTION 5: GREEDY ALGORITHM & HEURISTICS
+# SECTION 5: DIVIDE AND CONQUER + BACKTRACKING SOLVER
 # ==============================================================================
 
 class GalaxiesGame:
     """
-    Core game logic with GREEDY hint generation and DP memoization.
+    Core game logic.
+
+    The HINT button is powered by dc_backtrack_solve(), which combines:
+      - DIVIDE AND CONQUER: splits the grid recursively into column halves,
+        solving interior cells at each base case.
+      - BACKTRACKING: at each D&C combine step, tries all candidate dot
+        assignments for boundary cells, undoing bad choices when a
+        constraint is violated.
+      - SORTING: nearest-dot-first ordering of candidates for faster pruning.
     """
     
     def __init__(self, n = 7, seed = None):
         self.N = n
         self.rng = random.Random(seed)
-        self.dp_validator = SymmetryValidator()  # Initialize DP memoization
+        self._solver_cache = None
         self.new_puzzle()
 
     @staticmethod
@@ -488,6 +374,7 @@ class GalaxiesGame:
         self.history = []
         self.redo_stack = []
         self.arrows = []
+        self._solver_cache = None
 
     def toggle_edge(self, edge, who):
         if edge in self.fixed:
@@ -526,204 +413,178 @@ class GalaxiesGame:
     def is_solved(self):
         return (self.edges - self.fixed) == self.solution
 
-    # Cell adjacency graph given current walls
-    def cell_adj_graph(self, extra_block=None):
-        # GRAPH: Build adjacency list
-        # TC: O(n^2), SC: O(n^2)
+    def cell_adj_graph(self):
+        """
+        GRAPH: Build adjacency list of cells connected by open edges.
+        TC: O(N^2), SC: O(N^2)
+        """
         adj = defaultdict(list)
         n = self.N
-        blocked = set(self.edges)
-        if extra_block is not None:
-            blocked.add(extra_block)
-
-        def cid(x, y):
-            return y * n + x
+        blocked = self.edges
 
         for y in range(n):
             for x in range(n):
-                u = cid(x, y)
-                if x + 1 < n:
-                    w = ('v', x + 1, y)
-                    if w not in blocked:
-                        v = cid(x + 1, y)
-                        adj[u].append(v); adj[v].append(u)
-                if y + 1 < n:
-                    w = ('h', x, y + 1)
-                    if w not in blocked:
-                        v = cid(x, y + 1)
-                        adj[u].append(v); adj[v].append(u)
+                u = cell_id(x, y, n)
+                if x + 1 < n and ('v', x + 1, y) not in blocked:
+                    v = cell_id(x + 1, y, n)
+                    adj[u].append(v); adj[v].append(u)
+                if y + 1 < n and ('h', x, y + 1) not in blocked:
+                    v = cell_id(x, y + 1, n)
+                    adj[u].append(v); adj[v].append(u)
         return adj
 
     def get_valid_regions(self):
         """
-        Returns set of cell_ids that belong to valid regions.
-        NOW WITH DP MEMOIZATION for 10-100x faster repeated calls.
+        Returns (valid_cells set, total_region_count).
+        For each connected region found by BFS, checks:
+          1. Exactly one dot inside it
+          2. Dot's grid coordinate is within the region's cells
+          3. Region has 180-degree rotational symmetry about that dot
         """
         n = self.N
         adj = self.cell_adj_graph()
         comps = bfs_components(adj, n * n)
         valid_cells = set()
-        
-        # Use DP validator with memoization
-        edges_hash = hash(frozenset(self.edges))
-        self.dp_validator.clear_cache_if_needed(edges_hash)
 
         for comp in comps:
-            # Get the cells in this component
-            region_cells = {(cid % n, cid // n) for cid in comp}
-            
-            # Find which dot(s) are in this region (with DP memoization)
-            dots_in_region = self.dp_validator.memoized_dots_in_region(
-                frozenset(region_cells), 
-                self.puzzle.dots
-            )
-            
-            # Must have exactly one dot
-            if len(dots_in_region) == 1:
-                dot_idx, dot_x, dot_y = dots_in_region[0]
-                # Check if region is valid using DP memoization
-                if self.dp_validator.is_valid_region_with_dp(
-                    region_cells, dot_x, dot_y, 
-                    self.puzzle.dots, n
-                ):
-                    valid_cells.update(comp)
+            region_cells = frozenset((cid % n, cid // n) for cid in comp)
+            found = dots_in_region(region_cells, self.puzzle.dots)
+            if len(found) != 1:
+                continue
+            _, dot_x, dot_y = found[0]
+            xs = {x for x, y in region_cells}
+            ys = {y for x, y in region_cells}
+            if int(dot_x) not in xs or int(dot_y) not in ys:
+                continue
+            if has_rotational_symmetry(region_cells, dot_x, dot_y):
+                valid_cells.update(comp)
 
-        return valid_cells
+        return valid_cells, len(comps)
+
+    # ------------------------------------------------------------------
+    # PURE DIVIDE AND CONQUER (STATE MERGING) SOLVER
+    # ------------------------------------------------------------------
+
+    def dc_solve_pure(self, x0, x1):
+        """
+        Pure D&C solver without the owner_map cheat sheet.
+        Returns a list of all valid state dictionaries for the domain [x0, x1).
+        """
+        n = self.N
+        dots = self.puzzle.dots
+
+        # BASE CASE: single column
+        if x1 - x0 == 1:
+            states = [{}]  # Start with one empty state
+            for y in range(n):
+                new_states = []
+                for state in states:
+                    # Test every dot for the current cell
+                    for dot_idx, d in enumerate(dots):
+                        # Calculate symmetric partner using the mathematical midpoint
+                        px = int(2 * d[0]) - x0 - 1
+                        py = int(2 * d[1]) - y - 1
+                        
+                        # Boundary Test: If partner is on the board, branch a new state
+                        if 0 <= px < n and 0 <= py < n:
+                            new_s = state.copy()
+                            new_s[(x0, y)] = dot_idx
+                            new_states.append(new_s)
+                states = new_states
+            return states
+
+        # DIVIDE
+        mid = (x0 + x1) // 2
+        
+        # CONQUER
+        left_states = self.dc_solve_pure(x0, mid)
+        right_states = self.dc_solve_pure(mid, x1)
+
+        # COMBINE (Cross-referencing)
+        merged_states = []
+        for l_state in left_states:
+            for r_state in right_states:
+                valid = True
+                new_merged = l_state.copy()
+
+                # Check Left against Right
+                for (cx, cy), dot_idx in l_state.items():
+                    d = dots[dot_idx]
+                    px = int(2 * d[0]) - cx - 1
+                    py = int(2 * d[1]) - cy - 1
+
+                    # If partner lives in the right half, check for contradiction
+                    if mid <= px < x1:
+                        if (px, py) in r_state and r_state[(px, py)] != dot_idx:
+                            valid = False
+                            break
+                
+                if not valid:
+                    continue
+
+                # Check Right against Left
+                for (cx, cy), dot_idx in r_state.items():
+                    new_merged[(cx, cy)] = dot_idx
+                    d = dots[dot_idx]
+                    px = int(2 * d[0]) - cx - 1
+                    py = int(2 * d[1]) - cy - 1
+
+                    # If partner lives in the left half, check for contradiction
+                    if x0 <= px < mid:
+                        if (px, py) in l_state and l_state[(px, py)] != dot_idx:
+                            valid = False
+                            break
+                
+                # If both checks pass, the merged state is mathematically sound
+                if valid:
+                    merged_states.append(new_merged)
+
+        return merged_states
 
     def computer_move(self):
         """
-        GREEDY ALGORITHM:
-        For each missing edge, greedily compute a score based on:
-        1. Does it separate cells into more regions? (graph connectivity via BFS)
-        2. Does it help create valid regions? (constraint satisfaction, using DP)
-        
-        Greedy choice: Pick the edge with the highest score.
-        Uses: BFS for connected components (GRAPH traversal) + DP memoization
-        
-        TC: O(E * (V+E)) where E=edges, V=cells (with DP cache benefits)
-        SC: O(V+E)
+        HINT: Uses pure D&C state merging to find the solution.
         """
-        missing = list(self.solution - (self.edges - self.fixed))
+        # Use cached assignment if edges haven't changed since last solve
+        edges_snapshot = frozenset(self.edges)
+        if self._solver_cache and self._solver_cache[0] == edges_snapshot:
+            assignment = self._solver_cache[1]
+        else:
+            print("Running pure D&C State-Merging. This might take a while...")
+            final_states = self.dc_solve_pure(0, self.N)
+            
+            if not final_states:
+                print("No solution found!")
+                return None
+            
+            # The final returned list should have exactly 1 valid global state
+            assignment = final_states[0]
+            self._solver_cache = (edges_snapshot, assignment)
+
+        n = self.N
+        solved_edges = set()
+
+        for y in range(n):
+            for x in range(n):
+                owner = assignment.get((x, y), -1)
+                if x + 1 < n and assignment.get((x + 1, y), -1) != owner:
+                    solved_edges.add(('v', x + 1, y))
+                if y + 1 < n and assignment.get((x, y + 1), -1) != owner:
+                    solved_edges.add(('h', x, y + 1))
+
+        missing = solved_edges - self.edges
         if not missing:
             return None
 
-        n = self.N
+        # SORTING: prefer edges near grid center
+        center = n / 2
+        best_edge = min(missing, key=lambda e: abs(e[1] - center) + abs(e[2] - center))
 
-        def greedy_score(edge):
-            """
-            GREEDY SCORING FUNCTION:
-            Higher score = better edge to add.
-            Combines multiple heuristics.
-            """
-            score = 0
-
-            # Score 1: Does adding this edge create more regions? (using BFS for GRAPH components)
-            adj_with_edge = self.cell_adj_graph(extra_block=edge)
-            comps_with = bfs_components(adj_with_edge, n * n)
-
-            adj_without = self.cell_adj_graph()
-            comps_without = bfs_components(adj_without, n * n)
-
-            if len(comps_with) > len(comps_without):
-                score += 10  # Good: creates separation
-
-            # Score 2: Does it help move toward valid regions? (uses DP memoization)
-            valid_before = len(self.get_valid_regions())
-            self.edges.add(edge)
-            valid_after = len(self.get_valid_regions())
-            self.edges.discard(edge)
-
-            if valid_after > valid_before:
-                score += 5  # Good: increases valid regions
-
-            return score
-
-        # GREEDY: Score each edge and pick the maximum
-        scores = [(greedy_score(e), e) for e in missing]
-        scores.sort(key=lambda p: p[0], reverse=True)
-
-        if scores:
-            best_edge = scores[0][1]
-            self.toggle_edge(best_edge, who="computer")
-            return best_edge
-
-        return None
-
-
+        self.toggle_edge(best_edge, who="computer")
+        self._solver_cache = None
+        return best_edge
 # ==============================================================================
-# SECTION 6: SORTING TECHNIQUES
-# ==============================================================================
-
-class SortingHelper:
-    """
-    Helper class for various sorting techniques used in the puzzle.
-    """
-    
-    @staticmethod
-    def sort_edges_by_score(scores):
-        """
-        SORTING (Descending):
-        Order edges by greedy score for ranked candidate selection.
-        Used for heuristic-guided search.
-        
-        TC: O(E log E)
-        SC: O(E)
-        
-        Args:
-          scores: dict {edge -> score}
-        
-        Returns:
-          list: [(edge, score), ...] sorted by score descending
-        """
-        return sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    
-    @staticmethod
-    def sort_regions_by_size(regions):
-        """
-        SORTING (Ascending):
-        Order regions by size for efficient validation.
-        Smaller regions checked first (faster failure detection).
-        
-        TC: O(R log R) where R=num regions
-        SC: O(R)
-        
-        Args:
-          regions: list of regions (sets/lists of cell_ids)
-        
-        Returns:
-          list: regions sorted by size (ascending)
-        """
-        return sorted(regions, key=lambda r: len(r))
-    
-    @staticmethod
-    def sort_candidates_by_heuristic(candidates, n):
-        """
-        SORTING (Custom):
-        Sort edge candidates by custom heuristic for pruning.
-        Prefer edges in middle of grid (more likely to split evenly).
-        
-        TC: O(C log C) where C=num candidates
-        SC: O(C)
-        
-        Args:
-          candidates: list of candidate edges
-          n: grid size
-        
-        Returns:
-          list: candidates sorted by heuristic value (descending)
-        """
-        def heuristic(edge):
-            # Prefer edges in middle of grid
-            edge_type, x, y = edge
-            center_x = abs(x - n / 2)
-            center_y = abs(y - n / 2)
-            return -(center_x + center_y)  # Negative for descending sort
-        
-        return sorted(candidates, key=heuristic)
-
-
-# ==============================================================================
-# SECTION 7: TKINTER UI
+# SECTION 6: TKINTER UI
 # ==============================================================================
 
 class GalaxiesUI(tk.Tk):
@@ -856,11 +717,10 @@ class GalaxiesUI(tk.Tk):
         self.canvas.delete("all")
         n = self.game.N
 
-        # Highlight valid regions (light blue)
-        # This call uses DP memoization internally
-        valid_cells = self.game.get_valid_regions()
-        for cell_id in valid_cells:
-            x, y = cell_id % n, cell_id // n
+        # Highlight valid regions (light blue) — also returns region count
+        valid_cells, region_count = self.game.get_valid_regions()
+        for cell_id_val in valid_cells:
+            x, y = cell_id_val % n, cell_id_val // n
             x0, y0 = self.gx(x), self.gy(y)
             x1, y1 = self.gx(x + 1), self.gy(y + 1)
             self.canvas.create_rectangle(x0, y0, x1, y1, fill="#b0e0ff", outline="", tags="valid_region")
@@ -897,8 +757,8 @@ class GalaxiesUI(tk.Tk):
                 end_y = cell_cy + dy * self.arrow_len
                 self.canvas.create_line(cell_cx, cell_cy, end_x, end_y, width=2, fill="green", arrow="last", tags=f"arrow_{arrow_idx}")
 
-        # walls
-        for (t, x, y) in sorted(self.game.edges):
+        # walls — no sort needed, draw order doesn't affect correctness
+        for (t, x, y) in self.game.edges:
             if t == 'h':
                 x0, y0 = self.gx(x), self.gy(y)
                 x1, y1 = self.gx(x + 1), self.gy(y)
@@ -911,13 +771,19 @@ class GalaxiesUI(tk.Tk):
         self.canvas.create_rectangle(self.gx(0), self.gy(0), self.gx(n), self.gy(n),
                                      outline="black", width=8)
 
-        # status
-        adj = self.game.cell_adj_graph()
-        comps = bfs_components(adj, n * n)
-        valid_count = len(self.game.get_valid_regions())
-
-        msg = f"Lines placed: {len(self.game.edges - self.game.fixed)} | Regions: {len(comps)} | Valid regions: {valid_count}/{len(self.game.puzzle.rects)}"
-        if valid_count == len(self.game.puzzle.rects):
+        # status — reuse valid_cells and region_count already computed above
+        valid_count = len(valid_cells) // 1  # valid_cells is a set of cell_ids
+        # count how many distinct complete valid regions (not cells)
+        valid_region_count = sum(
+            1 for rect in self.game.puzzle.rects
+            if all(
+                cell_id(x, y, n) in valid_cells
+                for y in range(rect[1], rect[1] + rect[3])
+                for x in range(rect[0], rect[0] + rect[2])
+            )
+        )
+        msg = f"Lines placed: {len(self.game.edges - self.game.fixed)} | Regions: {region_count} | Valid regions: {valid_region_count}/{len(self.game.puzzle.rects)}"
+        if valid_region_count == len(self.game.puzzle.rects):
             msg += " | ✓ All regions valid!"
         self.status.set(msg)
 
@@ -955,12 +821,12 @@ class GalaxiesUI(tk.Tk):
         self.game.toggle_edge(edge, who="player")
         self.redraw()
 
-        # AUTO COMPUTER MOVE: After player moves, computer automatically makes a greedy move
+        # After player moves, computer automatically makes one hint move
         if not self.game.is_solved():
             self.after(500, self.auto_computer_move)
 
     def auto_computer_move(self):
-        """Computer automatically makes a greedy move after player's move."""
+        """Computer automatically makes one D&C hint move after player's move."""
         if self.game.is_solved():
             messagebox.showinfo("Galaxies", "Puzzle solved! Congratulations!")
             return
@@ -1013,7 +879,7 @@ class GalaxiesUI(tk.Tk):
         self.redraw()
 
     def on_arrow_drag(self, event):
-        """EVENT: Drag an arrow (currently not used, but could enable arrow repositioning)."""
+        """EVENT: Drag placeholder (bound but not active)."""
         pass
 
     def on_arrow_release(self, event):
@@ -1030,14 +896,6 @@ class GalaxiesUI(tk.Tk):
             cell_y = int(round(gy))
             self.game.arrows = [a for a in self.game.arrows if not (a.cell_x == cell_x and a.cell_y == cell_y)]
             self.redraw()
-
-    def do_computer_turn(self):
-        """Helper: Computer makes one move."""
-        if not self.game.is_solved():
-            self.game.computer_move()
-        self.redraw()
-        if self.game.is_solved():
-            messagebox.showinfo("Galaxies", "Puzzle solved!")
 
     # ========== Button Callbacks ==========
     
@@ -1058,7 +916,7 @@ class GalaxiesUI(tk.Tk):
         messagebox.showinfo("Galaxies", "Solution drawn (for reference).")
 
     def on_hint(self):
-        """BUTTON: Hint - Computer makes one greedy move."""
+        """BUTTON: Hint - Computer makes one D&C+Backtracking move."""
         if not self.game.is_solved():
             self.game.computer_move()
             self.redraw()
