@@ -321,6 +321,7 @@ class GalaxiesGame:
         self.rng = random.Random(seed)
         self.dp_validator = SymmetryValidator()
         self._solver_cache = None
+        self.computation_count = 0
         self.new_puzzle()
 
     @staticmethod
@@ -449,6 +450,7 @@ class GalaxiesGame:
                 new_states = []
                 for state in states:
                     for dot_idx, d in my_enumerate(dots):
+                        self.computation_count += 1
                         px = my_int(2 * d[0]) - x0 - 1
                         py = my_int(2 * d[1]) - y - 1
                         
@@ -467,6 +469,7 @@ class GalaxiesGame:
         merged_states = []
         for l_state in left_states:
             for r_state in right_states:
+                self.computation_count += 1
                 valid = True
                 new_merged = l_state.copy()
 
@@ -510,7 +513,10 @@ class GalaxiesGame:
         if self._solver_cache and self._solver_cache[0] == edges_snapshot:
             assignment = self._solver_cache[1]
         else:
+            self.computation_count = 0
             final_states = self.dc_solve_pure(0, self.N)
+            
+            print(f"Total pure D&C computations: {self.computation_count}")
             
             if not final_states:
                 return None

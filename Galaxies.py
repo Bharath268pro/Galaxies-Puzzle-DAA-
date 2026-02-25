@@ -134,6 +134,7 @@ class GalaxiesPuzzle:
         self.owner = [-1] * (n * n)
         self.dots = []
         self.solution_edges = set()
+        self.computation_count = 0
 
     def generate(self, target_rects=None):
         """
