@@ -60,6 +60,37 @@ from dataclasses import dataclass
 import random
 
 
+def bfs_components(adj, total_nodes):
+    """
+    GRAPH TRAVERSAL (BFS):
+    Find all connected components in an undirected graph.
+    
+    TC: O(V+E), SC: O(V)
+    
+    Args:
+      adj: adjacency list {node -> [neighbors]}
+      total_nodes: total number of nodes (0 to total_nodes-1)
+    
+    Returns:
+      list: [component, ...] where each component is a list of node IDs
+    """
+    seen = set()
+    comps = []
+    for s in range(total_nodes):
+        if s in seen:
+            continue
+        q = deque([s])
+        seen.add(s)
+        comp = []
+        while q:
+            u = q.popleft()
+            comp.append(u)
+            for v in adj.get(u, []):
+                if v not in seen:
+                    seen.add(v)
+                    q.append(v)
+        comps.append(comp)
+    return comps
 
 
 class GalaxiesPuzzle:
