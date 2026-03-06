@@ -333,26 +333,8 @@ class PuzzleGenerator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class BacktrackSolver:
-    """
-    Solves the Galaxies puzzle using pure backtracking.
 
-    assign[cy][cx] = dot_index  (or -1 if unassigned)
-
-    Key formula — 180° symmetric cell:
-      Cell (cx, cy) has centre (cx+0.5, cy+0.5).
-      Its mirror about dot (dx, dy):
-        scx = 2*dx - cx - 1
-        scy = 2*dy - cy - 1
-      Both must be integers inside the grid.
-
-    ┌─────────────────────────────────────────────────────────┐
-    │  CONTRIBUTION MAP                                       │
-    │  Member 1 → solve()  +  _touches()                     │
-    │  Member 2 → _bt()    +  _pick()   +  _dot_order()      │
-    │  Member 3 → _sym()   +  _options()                     │
-    │  Member 4 → _connected()                               │
-    └─────────────────────────────────────────────────────────┘
-    """
+  
     def _sym(self, cx, cy, di):
         dx, dy = self.dots[di]
         scx_f = 2*dx - cx - 1
@@ -377,6 +359,65 @@ class BacktrackSolver:
                 if assign[scy][scx] in (-1, di):
                     count += 1
         return count
+    def _dot_order(self, cx, cy, assign):
+        adj = set()
+        for dcx, dcy in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nx, ny = cx+dcx, cy+dcy
+            if 0 <= nx < self.N and 0 <= ny < self.N:
+                d = assign[ny][nx]
+                if d != -1:
+                    adj.add(d)
+        order = list(adj)
+        for di in range(len(self.dots)):
+            if di not in adj:
+                order.append(di)
+        return order
+    def _bt(self, assign):
+        cell = self._pick(assign)
+        if cell is None:
+            return self._connected(assign)
+        cx, cy = cell
+        tried = set()
+        for di in self._dot_order(cx, cy, assign):
+            self.computations += 1
+            if di in tried:
+                continue
+            tried.add(di)
+            sym = self._sym(cx, cy, di)
+            if sym is not None:
+                scx, scy = sym
+                if assign[scy][scx] not in (-1, di):
+                    continue
+            else:
+                dx, dy = self.dots[di]
+                if abs(dx-(cx+0.5)) > 1e-9 or abs(dy-(cy+0.5)) > 1e-9:
+                    continue
+            assign[cy][cx] = di
+            sym_a = None
+            if sym is not None:
+                scx, scy = sym
+                if assign[scy][scx] == -1:
+                    assign[scy][scx] = di
+                    sym_a = (scx, scy)
+            if self._bt(assign):
+                return True
+            assign[cy][cx] = -1
+            if sym_a:
+                assign[sym_a[1]][sym_a[0]] = -1
+            self.backtracks += 1
+        return False
+    def _pick(self, assign):
+        best, bval = None, 999
+        for cy in range(self.N):
+            for cx in range(self.N):
+                if assign[cy][cx] != -1:
+                    continue
+                v = self._options(cx, cy, assign)
+                if v == 0:
+                    return cx, cy
+                if v < bval:
+                    bval, best = v, (cx, cy)
+        return best
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GAME STATE
@@ -733,3 +774,4 @@ class GalaxiesUI(tk.Tk):
 if __name__ == "__main__":
 
     GalaxiesUI().mainloop()
+
