@@ -422,6 +422,24 @@ class BacktrackSolver:
     def _touches(self, cx, cy, di):
         dx, dy = self.dots[di]
         return cx <= dx <= cx+1 and cy <= dy <= cy+1
+    def _connected(self, assign):
+        N = self.N
+        for di in range(len(self.dots)):
+            region = [(cx, cy) for cy in range(N) for cx in range(N) if assign[cy][cx] == di]
+            if not region:
+                return False
+            rs = set(region)
+            vis = {region[0]}
+            q = deque([region[0]])
+            while q:
+                cx, cy = q.popleft()
+                for dcx, dcy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nb = (cx+dcx, cy+dcy)
+                    if nb in rs and nb not in vis:
+                        vis.add(nb); q.append(nb)
+            if len(vis) != len(rs):
+                return False
+        return True  
 
     def solve(self):
         N = self.N
@@ -805,5 +823,6 @@ class GalaxiesUI(tk.Tk):
 if __name__ == "__main__":
 
     GalaxiesUI().mainloop()
+
 
 
