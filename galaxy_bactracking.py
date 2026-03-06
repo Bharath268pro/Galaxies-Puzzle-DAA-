@@ -419,6 +419,37 @@ class BacktrackSolver:
                     bval, best = v, (cx, cy)
         return best
 
+    def _touches(self, cx, cy, di):
+        dx, dy = self.dots[di]
+        return cx <= dx <= cx+1 and cy <= dy <= cy+1
+
+    def solve(self):
+        N = self.N
+        assign = [[-1]*N for _ in range(N)]
+        for cy in range(N):
+            for cx in range(N):
+                for di in range(len(self.dots)):
+                    if self._touches(cx, cy, di) and assign[cy][cx] == -1:
+                        assign[cy][cx] = di
+        self.backtracks = 0
+        self.computations = 0
+        self.start_time = time.time()
+        result = self._bt(assign)
+        self.end_time = time.time()
+        
+        elapsed = self.end_time - self.start_time
+        print(f"\n{'='*60}")
+        print(f"Backtracking Solver Statistics")
+        print(f"{'='*60}")
+        print(f"Grid Size: {N}×{N}")
+        print(f"Number of Dots: {len(self.dots)}")
+        print(f"Computations: {self.computations}")
+        print(f"Backtracks: {self.backtracks}")
+        print(f"Time Taken: {elapsed:.6f} seconds")
+        print(f"{'='*60}\n")
+        
+        return assign if result else None
+
 # ══════════════════════════════════════════════════════════════════════════════
 # GAME STATE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -774,4 +805,5 @@ class GalaxiesUI(tk.Tk):
 if __name__ == "__main__":
 
     GalaxiesUI().mainloop()
+
 
