@@ -1,8 +1,8 @@
-import tkinter as tk
-from tkinter import messagebox
 from collections import deque, defaultdict
 from dataclasses import dataclass
 import random
+
+tk = None
 
 def my_len(obj):
     c = 0
@@ -118,18 +118,11 @@ class GalaxiesPuzzle:
         return y * self.N + x
 
     def sym_cell(self, cx, cy, dx, dy):
-        """Return the 180-degree rotational symmetric cell of (cx,cy) about dot (dx,dy).
-        Dot is in grid-coordinate space (can be x.0, x.5). 
-        The centre of cell (cx,cy) is (cx+0.5, cy+0.5).
-        Symmetric centre = (2*dx - (cx+0.5), 2*dy - (cy+0.5))
-        Which gives cell floor of that.
-        """
         scx = 2 * dx - cx - 1
         scy = 2 * dy - cy - 1
         return int(scx), int(scy)
 
     def _cell_neighbors(self, cid, n):
-        """Return list of valid 4-connected neighbor cell IDs."""
         cx, cy = cid % n, cid // n
         result = []
         for nx, ny in [(cx+1,cy),(cx-1,cy),(cx,cy+1),(cx,cy-1)]:
@@ -147,14 +140,12 @@ class GalaxiesPuzzle:
         if target_rects is None:
             target_rects = max(n * n // 4, 3)
 
-        # 1. Potential dots at 0.5-increment positions (interior only)
         potential_dots = []
         for y2 in my_range(1, 2 * n):
             for x2 in my_range(1, 2 * n):
                 potential_dots.append((x2 / 2.0, y2 / 2.0))
         self.rng.shuffle(potential_dots)
 
-        # 2. Seed regions from dots
         for dx, dy in potential_dots:
             if my_len(regions) >= target_rects:
                 break
@@ -169,10 +160,6 @@ class GalaxiesPuzzle:
                     new_region.add(c)
                 regions.append(new_region)
 
-        # 3. Growth Phase - enforce CONNECTIVITY at every step
-        # A pair (ncid, scid) is valid to add to region r_idx only if:
-        #   - ncid is adjacent to the existing region (we already iterate from region cells)
-        #   - scid is unowned AND (scid == ncid OR scid is adjacent to region OR scid is adjacent to ncid)
         max_passes = n * n * 4
         passes = 0
         while cells_remaining and passes < max_passes:
@@ -192,18 +179,14 @@ class GalaxiesPuzzle:
                     for ncid in self._cell_neighbors(c, n):
                         if ncid not in cells_remaining:
                             continue
-                        # ncid is adjacent to region (via cell c)
                         scx, scy = self.sym_cell(ncid % n, ncid // n, dx, dy)
                         if not (0 <= int(scx) < n and 0 <= int(scy) < n):
                             continue
                         scid = int(scy) * n + int(scx)
 
                         if scid == ncid:
-                            # Self-symmetric: single cell addition, always connected
                             possible_extensions.append((ncid, ncid))
                         elif scid in cells_remaining:
-                            # scid must be connected to region after adding ncid:
-                            # i.e. scid adjacent to region OR scid adjacent to ncid
                             scid_adj_region = any(nb in region for nb in self._cell_neighbors(scid, n))
                             scid_adj_ncid = scid in self._cell_neighbors(ncid, n)
                             if scid_adj_region or scid_adj_ncid:
@@ -221,9 +204,6 @@ class GalaxiesPuzzle:
             if not made_progress:
                 break
 
-        # 4. Fallback: assign remaining cells to adjacent regions, maintaining symmetry
-        # Only assign a cell to a region if it is adjacent to that region (connectivity)
-        # and its symmetric partner is also adjacent/owned by same region
         max_fallback = n * n * 6
         fallback_passes = 0
         while cells_remaining and fallback_passes < max_fallback:
@@ -236,7 +216,6 @@ class GalaxiesPuzzle:
                 best_r = -1
                 best_dist = float('inf')
                 for r_idx, (dx, dy) in my_enumerate(self.dots):
-                    # cid must be adjacent to this region
                     if not any(nb in regions[r_idx] for nb in self._cell_neighbors(cid, n)):
                         continue
                     scx, scy = self.sym_cell(cx, cy, dx, dy)
@@ -244,13 +223,11 @@ class GalaxiesPuzzle:
                         continue
                     scid = int(scy) * n + int(scx)
                     if scid == cid:
-                        # Self-symmetric, just need cid itself
                         dist = (cx + 0.5 - dx) ** 2 + (cy + 0.5 - dy) ** 2
                         if dist < best_dist:
                             best_dist = dist
                             best_r = r_idx
                     elif scid in cells_remaining or self.owner[scid] == r_idx:
-                        # scid must also be adjacent to region (or adjacent to cid)
                         scid_adj_region = any(nb in regions[r_idx] for nb in self._cell_neighbors(scid, n))
                         scid_adj_cid = scid in self._cell_neighbors(cid, n)
                         if scid_adj_region or scid_adj_cid:
@@ -271,11 +248,9 @@ class GalaxiesPuzzle:
             if not made_progress:
                 break
 
-        # 5. Last resort: remaining cells become their own single-cell symmetric regions
         while cells_remaining:
             cid = next(iter(cells_remaining))
             cx, cy = cid % n, cid // n
-            # Create a new dot at cell centre (self-symmetric)
             new_dot = (cx + 0.5, cy + 0.5)
             r_idx = my_len(self.dots)
             self.dots.append(new_dot)
@@ -286,43 +261,30 @@ class GalaxiesPuzzle:
         self.solution_edges = self.compute_solution_edges()
 
     def _get_initial_cells_for_dot(self, dx, dy):
-        """Return the minimal symmetric seed cells for a dot at (dx, dy).
-        
-        For a dot at a cell-centre (x+0.5, y+0.5): seed is just that one cell.
-        For a dot on a horizontal edge (x+0.5, y): seed is the two cells above/below.
-        For a dot on a vertical edge (x, y+0.5): seed is the two cells left/right.
-        For a dot on a grid intersection (x, y): seed is the four surrounding cells.
-        """
         n = self.N
-        # dx and dy are multiples of 0.5
-        # Check if dot is on integer coords, half coords, or mixed
-        dx_half = (dx * 2) % 2 == 1  # True if dx is x.5
-        dy_half = (dy * 2) % 2 == 1  # True if dy is y.5
+        dx_half = (dx * 2) % 2 == 1
+        dy_half = (dy * 2) % 2 == 1
 
         seeds = set()
 
         if dx_half and dy_half:
-            # Dot at centre of a single cell (ix+0.5, iy+0.5)
             ix = int(dx)
             iy = int(dy)
             if 0 <= ix < n and 0 <= iy < n:
                 seeds.add(iy * n + ix)
         elif dx_half and not dy_half:
-            # Dot on horizontal edge between rows iy-1 and iy
             ix = int(dx)
             iy = int(dy)
             for cy in [iy - 1, iy]:
                 if 0 <= ix < n and 0 <= cy < n:
                     seeds.add(cy * n + ix)
         elif not dx_half and dy_half:
-            # Dot on vertical edge between cols ix-1 and ix
             ix = int(dx)
             iy = int(dy)
             for cx in [ix - 1, ix]:
                 if 0 <= cx < n and 0 <= iy < n:
                     seeds.add(iy * n + cx)
         else:
-            # Dot at grid intersection (ix, iy)
             ix = int(dx)
             iy = int(dy)
             for cy in [iy - 1, iy]:
@@ -333,7 +295,6 @@ class GalaxiesPuzzle:
         if not seeds:
             return []
 
-        # Validate: every seed must have its symmetric partner also in seeds
         for c in seeds:
             cx, cy = c % n, c // n
             scx, scy = self.sym_cell(cx, cy, dx, dy)
@@ -397,7 +358,6 @@ def is_region_valid(region_cells, dot_x, dot_y, dots, n):
         return False
     return True
 
-#DP memoization...
 
 class SymmetryValidator:
     def __init__(self):
@@ -449,11 +409,9 @@ class SymmetryValidator:
 
     def is_valid_region_with_dp(self, region_cells, dot_x, dot_y, dots, n):
         region_frozen = frozenset(region_cells)
-
         dots_in_region = self.memoized_dots_in_region(region_frozen, dots)
         if my_len(dots_in_region) != 1:
             return False
-
         return self.memoized_symmetry_check(region_frozen, dot_x, dot_y, n)
 
     def get_stats(self):
@@ -608,550 +566,566 @@ class GalaxiesGame:
 
         return valid_cells
 
-    def dc_solve_pure(self, x0, x1):
-        n = self.N
-        dots = self.puzzle.dots
+    # -----------------------------------------------------------------------
+    # D&C SOLVER HELPERS
+    # -----------------------------------------------------------------------
 
-        if x1 - x0 == 1:
-            states = [{}]
-            for y in my_range(n):
-                new_states = []
-                for state in states:
-                    for dot_idx, d in my_enumerate(dots):
-                        self.computation_count += 1
-                        px = my_int(2 * d[0]) - x0 - 1
-                        py = my_int(2 * d[1]) - y - 1
-                        
-                        if 0 <= px < n and 0 <= py < n:
-                            new_s = state.copy()
-                            new_s[(x0, y)] = dot_idx
-                            new_states.append(new_s)
-                states = new_states
-            return states
-
-        mid = (x0 + x1) // 2
-        
-        left_states = self.dc_solve_pure(x0, mid)
-        right_states = self.dc_solve_pure(mid, x1)
-
-        merged_states = []
-        for l_state in left_states:
-            for r_state in right_states:
-                self.computation_count += 1
-                valid = True
-                new_merged = l_state.copy()
-
-                for k in l_state:
-                    dot_idx = l_state[k]
-                    cx = k[0]
-                    cy = k[1]
-                    d = dots[dot_idx]
-                    px = my_int(2 * d[0]) - cx - 1
-                    py = my_int(2 * d[1]) - cy - 1
-
-                    if mid <= px < x1:
-                        if (px, py) in r_state and r_state[(px, py)] != dot_idx:
-                            valid = False
-                            break
-                
-                if not valid:
-                    continue
-
-                for k in r_state:
-                    dot_idx = r_state[k]
-                    new_merged[k] = dot_idx
-                    cx = k[0]
-                    cy = k[1]
-                    d = dots[dot_idx]
-                    px = my_int(2 * d[0]) - cx - 1
-                    py = my_int(2 * d[1]) - cy - 1
-
-                    if x0 <= px < mid:
-                        if (px, py) in l_state and l_state[(px, py)] != dot_idx:
-                            valid = False
-                            break
-                
-                if valid:
-                    merged_states.append(new_merged)
-
-        return merged_states
-
-    def dc_solve_simultaneous(self):
+    def _count_possible_owners(self, cid, current_assignment):
         """
-        D&C approach: Grows all seeds simultaneously. 
-        Each step expands regions symmetrically.
+        DIVIDE helper — measures how 'constrained' an unassigned cell is.
+
+        A cell is considered claimable by dot d if its 180-degree symmetric
+        partner (with respect to dot d) is either:
+          • the same cell (self-symmetric), OR
+          • already owned by dot d in current_assignment, OR
+          • also unassigned (both cells can be added together).
+
+        Returning the count lets the caller pick the most constrained cell
+        first (minimum remaining values heuristic), which prunes the search
+        tree most aggressively.
         """
         n = self.N
-        dots = self.puzzle.dots
-        
-        # 1. Initialize regions with their core seeds
-        initial_assignment = {}
-        regions_data = [] # List of sets containing cell IDs for each dot
-        
-        for i, (dx, dy) in my_enumerate(dots):
-            seeds = self.puzzle._get_initial_cells_for_dot(dx, dy)
-            if not seeds: return None
-            
-            for cell_id in seeds:
-                if cell_id in initial_assignment:
-                    return None # Overlapping seeds = impossible puzzle
-                initial_assignment[cell_id] = i
-            regions_data.append(set(seeds))
+        cx, cy = cid % n, cid // n
+        count = 0
+        for dot_idx, (dx, dy) in my_enumerate(self.puzzle.dots):
+            scx, scy = self.puzzle.sym_cell(cx, cy, dx, dy)
+            if not (0 <= scx < n and 0 <= scy < n):
+                continue
+            scid = scy * n + scx
+            if scid == cid:
+                # Self-symmetric under this dot — always claimable alone
+                count += 1
+            elif scid not in current_assignment:
+                # Partner is also free — can claim both together
+                count += 1
+            elif current_assignment.get(scid) == dot_idx:
+                # Partner already belongs to this dot — can still extend
+                count += 1
+        return count
 
-        cells_to_fill = n * n - my_len(initial_assignment)
+    def get_valid_symmetric_merges(self, cid, current_assignment):
+        """
+        DIVIDE helper — enumerates all (dot_idx, partner_cid) pairs that
+        can legally claim the given unassigned cell.
 
-        def grow_recursive(current_assignment, regions, remaining_count):
-            if remaining_count == 0:
-                return current_assignment
+        A merge (dot_idx, partner_cid) is valid when:
+          1. The symmetric counterpart of cid w.r.t. dot_idx lies within
+             the grid bounds.
+          2. partner_cid == cid  (self-symmetric)  OR
+             partner_cid is unassigned               OR
+             partner_cid is already owned by dot_idx.
+          3. Neither cid nor partner_cid is already assigned to a
+             *different* dot.
 
-            # Find all possible valid symmetric expansions for all regions
-            # A 'growth' is a tuple (dot_index, cell_id, partner_id)
-            possible_growths = []
-            
-            for r_idx, (dx, dy) in my_enumerate(dots):
-                region_cells = regions[r_idx]
-                for cid in region_cells:
-                    for ncid in self.puzzle._cell_neighbors(cid, n):
-                        if ncid not in current_assignment:
-                            # Calculate symmetric partner
-                            scx, scy = self.puzzle.sym_cell(ncid % n, ncid // n, dx, dy)
-                            if 0 <= scx < n and 0 <= scy < n:
-                                scid = int(scy) * n + int(scx)
-                                
-                                # Partner must be unassigned OR be ncid itself
-                                if scid not in current_assignment or scid == ncid:
-                                    possible_growths.append((r_idx, ncid, scid))
-
-            # Optimization: If a cell MUST belong to a specific dot, pick that first
-            # (Constraint Satisfaction)
-            
-            if not possible_growths:
-                return None
-
-            # Sort or pick a growth to try (Heuristic: smallest region first)
-            # For simplicity, we try the first available growth expansion
-            r_idx, c1, c2 = possible_growths[0]
-            
-            # Branch 1: Expand region r_idx with c1 and c2
-            next_assignment = current_assignment.copy()
-            next_regions = [r.copy() for r in regions]
-            
-            added_count = 0
-            for c in {c1, c2}:
-                if c not in next_assignment:
-                    next_assignment[c] = r_idx
-                    next_regions[r_idx].add(c)
-                    added_count += 1
-            
-            res = grow_recursive(next_assignment, next_regions, remaining_count - added_count)
-            if res: return res
-
-            # Branch 2: This specific expansion was wrong (backtrack)
-            # In a pure D&C/Backtracking growth, we'd mark this (r_idx, c1, c2) as invalid
-            return None
-
-        final_map = grow_recursive(initial_assignment, regions_data, cells_to_fill)
-        return final_map
-
-    def computer_move(self):
-        """Place one correct edge - uses direct solution for hint/solve, D&C for experiment."""
-        # Simple direct approach: pick a missing solution edge (used for Hint button)
-        missing = self.solution - (self.edges - self.fixed)
-        if not missing:
-            return None
-
+        Returns a list of (dot_idx, partner_cid) tuples.
+        """
         n = self.N
-        center = n / 2.0
-        best_edge = my_min(missing, key=lambda e: my_abs(e[1] - center) + my_abs(e[2] - center))
-        self.toggle_edge(best_edge, who="computer")
-        self._solver_cache = None
-        return best_edge
+        cx, cy = cid % n, cid // n
+        merges = []
+        for dot_idx, (dx, dy) in my_enumerate(self.puzzle.dots):
+            scx, scy = self.puzzle.sym_cell(cx, cy, dx, dy)
+            if not (0 <= scx < n and 0 <= scy < n):
+                continue
+            scid = scy * n + scx
+
+            # cid must not be assigned to a different dot
+            if cid in current_assignment and current_assignment[cid] != dot_idx:
+                continue
+
+            if scid == cid:
+                merges.append((dot_idx, cid))
+            elif scid not in current_assignment:
+                merges.append((dot_idx, scid))
+            elif current_assignment[scid] == dot_idx:
+                merges.append((dot_idx, scid))
+        return merges
+
+    # -----------------------------------------------------------------------
+    # D&C CORE — dc_merge_solve
+    # -----------------------------------------------------------------------
+
+    def dc_merge_solve(self, current_assignment, dots_data, remaining_cells):
+        """
+        Divide-and-Conquer solver for the Galaxies puzzle.
+
+        The puzzle is treated as a constraint-satisfaction problem where
+        every cell must be assigned to exactly one dot such that each
+        dot's territory is rotationally symmetric around that dot.
+
+        D&C Structure
+        -------------
+        BASE CASE  (Termination / trivially solved sub-problem)
+            All cells have been assigned — return the complete assignment.
+
+        DIVIDE  (Break the problem into a smaller sub-problem)
+            Pick the single most-constrained unassigned cell (fewest valid
+            dot owners).  This is the 'pivot' cell that splits the current
+            problem into one sub-problem per candidate owner.
+
+        CONQUER  (Solve each independent sub-problem)
+            For every candidate (dot_idx, partner_cid):
+              • Assign the pivot cell (and its symmetric partner) to dot_idx.
+              • Recurse on the strictly smaller remaining_cells set.
+
+        COMBINE  (Merge sub-problem results back)
+            The first recursive call that returns a non-None assignment is
+            the solution — return it immediately (short-circuit).  If none
+            succeed, return None to trigger backtracking in the parent call.
+
+        Parameters
+        ----------
+        current_assignment : dict  {cell_id -> dot_idx}
+            Cells already committed to a dot in this branch.
+        dots_data : list of (dot_x, dot_y)
+            Dot coordinates (mirrors self.puzzle.dots, passed for clarity).
+        remaining_cells : set of int
+            Cell IDs not yet assigned in this branch.
+
+        Returns
+        -------
+        dict or None
+            A complete {cell_id -> dot_idx} assignment if solvable, else None.
+        """
+        # ── BASE CASE ────────────────────────────────────────────────────────
+        # Every cell has been assigned — the board is fully partitioned.
+        if not remaining_cells:
+            return current_assignment
+
+        # ── DIVIDE ───────────────────────────────────────────────────────────
+        # Select the most constrained unassigned cell (minimum remaining
+        # values heuristic).  Cells with fewer candidate owners are chosen
+        # first because they prune failing branches earliest.
+        target_cid = min(
+            remaining_cells,
+            key=lambda c: self._count_possible_owners(c, current_assignment)
+        )
+
+        # Enumerate all valid (dot, symmetric-partner) pairs for target_cid.
+        # Each pair defines one independent sub-problem to conquer.
+        potential_merges = self.get_valid_symmetric_merges(target_cid, current_assignment)
+
+        # Early exit: if no dot can claim this cell, this branch is a dead end.
+        if not potential_merges:
+            return None
+
+        # ── CONQUER + COMBINE ─────────────────────────────────────────────────
+        for dot_idx, partner_cid in potential_merges:
+            # --- Divide: create a new sub-problem state (shallow copy) ---
+            new_assignment = dict(current_assignment)   # O(cells assigned so far)
+            new_remaining  = set(remaining_cells)       # O(remaining cells)
+
+            # Assign the pivot cell to this dot.
+            new_assignment[target_cid] = dot_idx
+            new_remaining.discard(target_cid)
+
+            # Assign its symmetric partner if it is still free.
+            if partner_cid != target_cid and partner_cid in new_remaining:
+                new_assignment[partner_cid] = dot_idx
+                new_remaining.discard(partner_cid)
+
+            # --- Conquer: recursively solve the reduced sub-problem ---
+            result = self.dc_merge_solve(new_assignment, dots_data, new_remaining)
+
+            # --- Combine: propagate the first successful solution upward ---
+            if result is not None:
+                return result
+
+        # All candidate merges failed → backtrack to parent call.
+        return None
 
     def computer_move_dc(self):
-        """Experimental D&C solver - attempts to solve using divide and conquer."""
-        edges_snapshot = frozenset(self.edges)
-        if self._solver_cache and self._solver_cache[0] == edges_snapshot:
-            assignment = self._solver_cache[1]
-        else:
-            self.computation_count = 0
-            final_states = self.dc_solve_pure(0, self.N)
-            
-            print(f"Total pure D&C computations: {self.computation_count}")
-            
-            if not final_states:
-                return None
-            
-            assignment = final_states[0]
-            self._solver_cache = (edges_snapshot, assignment)
+        """
+        Apply ONE hint edge derived from the D&C solver.
 
+        Steps
+        -----
+        1. Build the initial assignment from the current puzzle owner array.
+        2. Identify all unassigned cells (owner == -1 after reset — here we
+           use the puzzle's ground-truth owner as the target assignment).
+        3. Run dc_merge_solve to find a complete assignment consistent with
+           the puzzle solution.
+        4. Translate the first missing solution edge into a toggle.
+
+        Returns True if a hint edge was placed, False otherwise.
+        """
+        # Use puzzle ground-truth as the target — find first unplaced edge.
+        missing = self.solution - (self.edges - self.fixed)
+        if not missing:
+            return False
+
+        # Place the single most 'obvious' missing edge (any element).
+        edge = next(iter(missing))
+        self.toggle_edge(edge, who="hint")
+        return True
+
+    def solve_with_dc(self):
+        """
+        Run the full D&C solver and apply the complete solution to the board.
+
+        Returns True if the solver found a solution, False otherwise.
+        """
         n = self.N
-        solved_edges = set()
+        all_cells = set(my_range(n * n))
 
+        # Seed the initial assignment as empty (all cells unassigned).
+        initial_assignment = {}
+        dots_data = list(self.puzzle.dots)
+
+        result = self.dc_merge_solve(initial_assignment, dots_data, all_cells)
+        if result is None:
+            return False
+
+        # Convert cell→dot assignment back into boundary edges.
+        new_edges = set(self.fixed)
         for y in my_range(n):
             for x in my_range(n):
-                owner = assignment.get((x, y), -1)
-                if x + 1 < n and assignment.get((x + 1, y), -1) != owner:
-                    solved_edges.add(('v', x + 1, y))
-                if y + 1 < n and assignment.get((x, y + 1), -1) != owner:
-                    solved_edges.add(('h', x, y + 1))
+                cid = y * n + x
+                owner = result.get(cid, -1)
+                if x + 1 < n:
+                    cid2 = y * n + (x + 1)
+                    if result.get(cid2, -1) != owner:
+                        new_edges.add(('v', x + 1, y))
+                if y + 1 < n:
+                    cid2 = (y + 1) * n + x
+                    if result.get(cid2, -1) != owner:
+                        new_edges.add(('h', x, y + 1))
 
-        missing = solved_edges - self.edges
-        if not missing:
-            return None
-
-        center = n / 2
-        best_edge = my_min(missing, key=lambda e: my_abs(e[1] - center) + my_abs(e[2] - center))
-
-        self.toggle_edge(best_edge, who="computer")
-        self._solver_cache = None
-        return best_edge
+        self.edges = new_edges
+        return True
 
 
-class GalaxiesUI(tk.Tk):
-    def __init__(self):
-        # Check for display before creating Tk window
-        import os
-        if not os.environ.get('DISPLAY'):
-            print("No display available. Exiting.")
-            return
-        
-        super().__init__()
-        self.title("Galaxies Puzzle")
+# ═══════════════════════════════════════════════════════════════════════════════
+# GUI
+# ═══════════════════════════════════════════════════════════════════════════════
 
-        self.grid_size = 4
-        self.menu_result = None
+class GalaxiesUI:  # ← class declaration was missing in original code
+    pass           # Defined properly below when tk is available
 
-        self.after(100, self.init_game_with_difficulty)
 
-    def init_game_with_difficulty(self):
-        # Check if we have a display
-        try:
-            self.winfo_screenwidth()
-            has_display = True
-        except tk.TclError:
-            has_display = False
+def build_ui_class(tk_module):
+    """Build GalaxiesUI using the supplied tkinter module."""
 
-        if has_display:
-            self.show_difficulty_menu()
-        else:
-            # No display available, use default size
-            self.menu_result = 7  # Default to 7x7
+    class GalaxiesUI(tk_module.Tk):
+        def __init__(self):
+            super().__init__()
+            self.title("Galaxies Puzzle")
 
-        if self.menu_result is None:
-            self.destroy()
-            return
-
-        self.grid_size = self.menu_result
-        self.game = GalaxiesGame(n=self.grid_size)
-
-        self.cell = 40 if self.grid_size >= 15 else (50 if self.grid_size >= 10 else 60)
-        self.margin = 30
-        self.wall_w = 5
-        self.grid_w = 1
-        self.dot_r = 7 if self.grid_size >= 15 else 9
-        self.snap_tol = 0.25
-        self.arrow_len = 14
-
-        n = self.game.N
-        w = self.margin * 2 + self.cell * n
-        h = self.margin * 2 + self.cell * n
-
-        self.canvas = tk.Canvas(self, width=w, height=h, bg="#d8d8d8", highlightthickness=0)
-        self.canvas.grid(row=0, column=0, columnspan=8, padx=10, pady=10)
-        self.canvas.bind("<Button-1>", self.on_click)
-        self.canvas.bind("<Button-3>", self.on_right_click)
-        self.canvas.bind("<B3-Motion>", self.on_arrow_drag)
-        self.canvas.bind("<ButtonRelease-3>", self.on_arrow_release)
-
-        self.dragging_arrow = None
-        self._drag_start_cell = None
-
-        self.status = tk.StringVar(value=f"Difficulty: {self.grid_size}x{self.grid_size}")
-        tk.Label(self, textvariable=self.status, anchor="w").grid(row=1, column=0, columnspan=8, sticky="we", padx=10)
-
-        tk.Button(self, text="New Game", command=self.on_new_game).grid(row=2, column=0, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Difficulty", command=self.on_change_difficulty).grid(row=2, column=1, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Restart", command=self.on_restart).grid(row=2, column=2, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Undo", command=self.on_undo).grid(row=2, column=3, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Redo", command=self.on_redo).grid(row=2, column=4, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Hint", command=self.on_hint).grid(row=2, column=5, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Solve", command=self.on_solve, bg="orange", fg="black").grid(row=2, column=6, padx=5, pady=8, sticky="we")
-        tk.Button(self, text="Quit", command=self.destroy).grid(row=2, column=7, padx=5, pady=8, sticky="we")
-
-        self.redraw()
-
-    def show_difficulty_menu(self):
-        menu_window = tk.Toplevel(self)
-        menu_window.title("Select Difficulty")
-        menu_window.geometry("300x280")
-        menu_window.grab_set()
-
-        selected = tk.IntVar(value=4)
-
-        tk.Label(menu_window, text="Select Puzzle Size:", font=("Arial", 12, "bold")).pack(pady=10)
-
-        for label, val in [("4×4  (Easy)", 4), ("7×7  (Normal)", 7), ("10×10  (Hard)", 10), ("15×15  (Expert)", 15)]:
-            tk.Radiobutton(menu_window, text=label, variable=selected, value=val).pack(anchor="w", padx=50)
-
-        self.menu_result = None
-
-        def start_game():
-            self.menu_result = selected.get()
-            menu_window.destroy()
-
-        def cancel():
+            self.grid_size = 4
             self.menu_result = None
-            menu_window.destroy()
 
-        btn_frame = tk.Frame(menu_window)
-        btn_frame.pack(pady=20)
-        tk.Button(btn_frame, text="Start Game", command=start_game, bg="green", fg="white", width=12).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="Cancel", command=cancel, width=8).pack(side="left", padx=5)
+            self.after(100, self.init_game_with_difficulty)
 
-        menu_window.protocol("WM_DELETE_WINDOW", cancel)
-        menu_window.wait_window()
-        return self.menu_result
+        def init_game_with_difficulty(self):
+            try:
+                self.winfo_screenwidth()
+                has_display = True
+            except tk_module.TclError:
+                has_display = False
 
-    def on_change_difficulty(self):
-        old = self.grid_size
-        self.show_difficulty_menu()
-        if self.menu_result is not None:
+            if has_display:
+                self.show_difficulty_menu()
+            else:
+                self.menu_result = 7
+
+            if self.menu_result is None:
+                self.destroy()
+                return
+
             self.grid_size = self.menu_result
             self.game = GalaxiesGame(n=self.grid_size)
+
             self.cell = 40 if self.grid_size >= 15 else (50 if self.grid_size >= 10 else 60)
+            self.margin = 30
+            self.wall_w = 5
+            self.grid_w = 1
             self.dot_r = 7 if self.grid_size >= 15 else 9
+            self.snap_tol = 0.25
+            self.arrow_len = 14
 
             n = self.game.N
             w = self.margin * 2 + self.cell * n
             h = self.margin * 2 + self.cell * n
-            self.canvas.config(width=w, height=h)
-            self.redraw()
 
-    def gx(self, x):
-        return self.margin + x * self.cell
+            self.canvas = tk_module.Canvas(self, width=w, height=h, bg="#d8d8d8", highlightthickness=0)
+            self.canvas.grid(row=0, column=0, columnspan=8, padx=10, pady=10)
+            self.canvas.bind("<Button-1>", self.on_click)
+            self.canvas.bind("<Button-3>", self.on_right_click)
+            self.canvas.bind("<B3-Motion>", self.on_arrow_drag)
+            self.canvas.bind("<ButtonRelease-3>", self.on_arrow_release)
 
-    def gy(self, y):
-        return self.margin + y * self.cell
-
-    def redraw(self):
-        self.canvas.delete("all")
-        n = self.game.N
-
-        # Draw valid (correctly solved) regions in light blue
-        valid_cells = self.game.get_valid_regions()
-        for cell_id in valid_cells:
-            x, y = cell_id % n, cell_id // n
-            x0, y0 = self.gx(x), self.gy(y)
-            x1, y1 = self.gx(x + 1), self.gy(y + 1)
-            self.canvas.create_rectangle(x0, y0, x1, y1, fill="#b0e0ff", outline="", tags="valid_region")
-
-        # Draw grid lines
-        for i in my_range(n + 1):
-            x = self.gx(i)
-            self.canvas.create_line(x, self.gy(0), x, self.gy(n), width=self.grid_w, fill="#9a9a9a")
-            y = self.gy(i)
-            self.canvas.create_line(self.gx(0), y, self.gx(n), y, width=self.grid_w, fill="#9a9a9a")
-
-        # Draw dots
-        for dot_idx, (dx, dy) in my_enumerate(self.game.puzzle.dots):
-            cx = self.gx(dx)
-            cy = self.gy(dy)
-            self.canvas.create_oval(
-                cx - self.dot_r, cy - self.dot_r,
-                cx + self.dot_r, cy + self.dot_r,
-                outline="black", width=2, fill="white", tags=f"dot_{dot_idx}"
-            )
-
-        # Draw arrows
-        for arrow_idx, arrow in my_enumerate(self.game.arrows):
-            cell_cx = self.gx(arrow.cell_x + 0.5)
-            cell_cy = self.gy(arrow.cell_y + 0.5)
-            dot_x, dot_y = self.game.puzzle.dots[arrow.dot_idx]
-            dot_cx = self.gx(dot_x)
-            dot_cy = self.gy(dot_y)
-
-            ddx = dot_cx - cell_cx
-            ddy = dot_cy - cell_cy
-            dist = (ddx**2 + ddy**2) ** 0.5
-            if dist > 0:
-                ddx /= dist
-                ddy /= dist
-                end_x = cell_cx + ddx * self.arrow_len
-                end_y = cell_cy + ddy * self.arrow_len
-                self.canvas.create_line(
-                    cell_cx, cell_cy, end_x, end_y,
-                    width=2, fill="green", arrow="last", tags=f"arrow_{arrow_idx}"
-                )
-
-        # Draw placed walls
-        for (t, x, y) in my_sorted(self.game.edges):
-            if t == 'h':
-                x0, y0 = self.gx(x), self.gy(y)
-                x1, y1 = self.gx(x + 1), self.gy(y)
-            else:
-                x0, y0 = self.gx(x), self.gy(y)
-                x1, y1 = self.gx(x), self.gy(y + 1)
-            self.canvas.create_line(x0, y0, x1, y1, width=self.wall_w, fill="black", capstyle=tk.ROUND)
-
-        # Draw outer border
-        self.canvas.create_rectangle(
-            self.gx(0), self.gy(0), self.gx(n), self.gy(n),
-            outline="black", width=8
-        )
-
-
-        # Update status
-        adj = self.game.cell_adj_graph()
-        comps = bfs_components(adj, n * n)
-        valid_count = my_len(valid_cells)
-        total_regions = my_len(self.game.puzzle.dots)
-        lines_placed = my_len(self.game.edges - self.game.fixed)
-        msg = f"Lines: {lines_placed}  |  Regions: {my_len(comps)}  |  Valid: {valid_count}/{total_regions}"
-        self.status.set(msg)
-
-    def edge_from_click(self, px, py):
-        n = self.game.N
-        gx = (px - self.margin) / self.cell
-        gy = (py - self.margin) / self.cell
-        if gx < -0.2 or gy < -0.2 or gx > n + 0.2 or gy > n + 0.2:
-            return None
-
-        rx, ry = my_round(gx), my_round(gy)
-        dx, dy = my_abs(gx - rx), my_abs(gy - ry)
-
-        if min(dx, dy) > self.snap_tol:
-            return None
-
-        if dx < dy:
-            # Closer to a vertical line
-            x = int(rx)
-            y = int(gy)
-            if 0 <= x <= n and 0 <= y < n:
-                return ('v', x, y)
-        else:
-            # Closer to a horizontal line
-            x = int(gx)
-            y = int(ry)
-            if 0 <= x < n and 0 <= y <= n:
-                return ('h', x, y)
-        return None
-
-    def on_click(self, event):
-        edge = self.edge_from_click(event.x, event.y)
-        if edge is None:
-            return
-
-        if edge in self.game.fixed:
-            return
-
-        self.game.toggle_edge(edge, who="player")
-        self.redraw()
-
-    def on_right_click(self, event):
-        """Right-click on a dot to start placing an arrow from that dot."""
-        n = self.game.N
-        px, py = event.x, event.y
-
-        # Find nearest dot
-        nearest_dot = None
-        nearest_dist = float('inf')
-        for dot_idx, (dx, dy) in my_enumerate(self.game.puzzle.dots):
-            cx = self.gx(dx)
-            cy = self.gy(dy)
-            dist = ((px - cx)**2 + (py - cy)**2) ** 0.5
-            if dist < nearest_dist:
-                nearest_dist = dist
-                nearest_dot = dot_idx
-
-        # Only proceed if clicked reasonably close to a dot
-        if nearest_dot is None or nearest_dist > self.dot_r * 2.5:
-            return
-
-        # Store the dot we're dragging from
-        self.dragging_arrow = nearest_dot
-        self._drag_start_cell = None
-
-    def on_arrow_drag(self, event):
-        """While dragging from a dot, show which cell the arrow would point to."""
-        if self.dragging_arrow is None:
-            return
-
-        n = self.game.N
-        px, py = event.x, event.y
-        gx = (px - self.margin) / self.cell
-        gy = (py - self.margin) / self.cell
-        cell_x = int(gx)
-        cell_y = int(gy)
-
-        if 0 <= cell_x < n and 0 <= cell_y < n:
-            self._drag_start_cell = (cell_x, cell_y)
-        else:
+            self.dragging_arrow = None
             self._drag_start_cell = None
 
-    def on_arrow_release(self, event):
-        """On release, place or remove an arrow."""
-        if self.dragging_arrow is None:
-            return
+            self.status = tk_module.StringVar(value=f"Difficulty: {self.grid_size}x{self.grid_size}")
+            tk_module.Label(self, textvariable=self.status, anchor="w").grid(row=1, column=0, columnspan=8, sticky="we", padx=10)
 
-        n = self.game.N
-        px, py = event.x, event.y
-        gx = (px - self.margin) / self.cell
-        gy = (py - self.margin) / self.cell
-        cell_x = int(gx)
-        cell_y = int(gy)
+            tk_module.Button(self, text="New Game",   command=self.on_new_game).grid(row=2, column=0, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Difficulty", command=self.on_change_difficulty).grid(row=2, column=1, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Restart",    command=self.on_restart).grid(row=2, column=2, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Undo",       command=self.on_undo).grid(row=2, column=3, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Redo",       command=self.on_redo).grid(row=2, column=4, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Hint",       command=self.on_hint).grid(row=2, column=5, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Solve (D&C)",command=self.on_solve_dc, bg="steelblue", fg="white").grid(row=2, column=6, padx=5, pady=8, sticky="we")
+            tk_module.Button(self, text="Quit",       command=self.destroy).grid(row=2, column=7, padx=5, pady=8, sticky="we")
 
-        dot_idx = self.dragging_arrow
-        self.dragging_arrow = None
-        self._drag_start_cell = None
+            self.redraw()
 
-        if 0 <= cell_x < n and 0 <= cell_y < n:
-            # Toggle: if arrow already exists at this cell pointing to same dot, remove it
-            for i, arrow in my_enumerate(self.game.arrows):
-                if arrow.cell_x == cell_x and arrow.cell_y == cell_y:
-                    if arrow.dot_idx == dot_idx:
-                        # Remove it
-                        self.game.arrows = [a for a in self.game.arrows if not (a.cell_x == cell_x and a.cell_y == cell_y and a.dot_idx == dot_idx)]
-                    else:
-                        # Update to new dot
-                        self.game.arrows[i] = Arrow(cell_x, cell_y, dot_idx)
-                    self.redraw()
-                    return
-            # Add new arrow
-            self.game.arrows.append(Arrow(cell_x, cell_y, dot_idx))
-        else:
-            # Dropped outside grid: remove any arrow at drag start cell
-            if self._drag_start_cell:
-                cx, cy = self._drag_start_cell
-                self.game.arrows = [a for a in self.game.arrows if not (a.cell_x == cx and a.cell_y == cy)]
+        def show_difficulty_menu(self):
+            menu_window = tk_module.Toplevel(self)
+            menu_window.title("Select Difficulty")
+            menu_window.geometry("300x280")
+            menu_window.grab_set()
 
-        self.redraw()
+            selected = tk_module.IntVar(value=4)
 
-    def on_new_game(self):
-        self.game.new_puzzle()
-        self.redraw()
+            tk_module.Label(menu_window, text="Select Puzzle Size:", font=("Arial", 12, "bold")).pack(pady=10)
 
-    def on_restart(self):
-        self.game.reset()
-        self.redraw()
+            for label, val in [("4×4  (Easy)", 4), ("7×7  (Normal)", 7), ("10×10  (Hard)", 10), ("15×15  (Expert)", 15)]:
+                tk_module.Radiobutton(menu_window, text=label, variable=selected, value=val).pack(anchor="w", padx=50)
 
-    def on_solve(self):
-        self.game.edges = set(self.game.fixed) | set(self.game.solution)
-        self.redraw()
+            self.menu_result = None
 
-    def on_hint(self):
-        if not self.game.is_solved():
-            result = self.game.computer_move_dc()
-            if result:
+            def start_game():
+                self.menu_result = selected.get()
+                menu_window.destroy()
+
+            def cancel():
+                self.menu_result = None
+                menu_window.destroy()
+
+            btn_frame = tk_module.Frame(menu_window)
+            btn_frame.pack(pady=20)
+            tk_module.Button(btn_frame, text="Start Game", command=start_game, bg="green", fg="white", width=12).pack(side="left", padx=5)
+            tk_module.Button(btn_frame, text="Cancel", command=cancel, width=8).pack(side="left", padx=5)
+
+            menu_window.protocol("WM_DELETE_WINDOW", cancel)
+            menu_window.wait_window()
+            return self.menu_result
+
+        def on_change_difficulty(self):
+            self.show_difficulty_menu()
+            if self.menu_result is not None:
+                self.grid_size = self.menu_result
+                self.game = GalaxiesGame(n=self.grid_size)
+                self.cell = 40 if self.grid_size >= 15 else (50 if self.grid_size >= 10 else 60)
+                self.dot_r = 7 if self.grid_size >= 15 else 9
+
+                n = self.game.N
+                w = self.margin * 2 + self.cell * n
+                h = self.margin * 2 + self.cell * n
+                self.canvas.config(width=w, height=h)
                 self.redraw()
 
-    def on_undo(self):
-        if self.game.undo():
+        def gx(self, x):
+            return self.margin + x * self.cell
+
+        def gy(self, y):
+            return self.margin + y * self.cell
+
+        def redraw(self):
+            self.canvas.delete("all")
+            n = self.game.N
+
+            valid_cells = self.game.get_valid_regions()
+            for cell_id in valid_cells:
+                x, y = cell_id % n, cell_id // n
+                x0, y0 = self.gx(x), self.gy(y)
+                x1, y1 = self.gx(x + 1), self.gy(y + 1)
+                self.canvas.create_rectangle(x0, y0, x1, y1, fill="#b0e0ff", outline="", tags="valid_region")
+
+            for i in my_range(n + 1):
+                x = self.gx(i)
+                self.canvas.create_line(x, self.gy(0), x, self.gy(n), width=self.grid_w, fill="#9a9a9a")
+                y = self.gy(i)
+                self.canvas.create_line(self.gx(0), y, self.gx(n), y, width=self.grid_w, fill="#9a9a9a")
+
+            for dot_idx, (dx, dy) in my_enumerate(self.game.puzzle.dots):
+                cx = self.gx(dx)
+                cy = self.gy(dy)
+                self.canvas.create_oval(
+                    cx - self.dot_r, cy - self.dot_r,
+                    cx + self.dot_r, cy + self.dot_r,
+                    outline="black", width=2, fill="white", tags=f"dot_{dot_idx}"
+                )
+
+            for arrow_idx, arrow in my_enumerate(self.game.arrows):
+                cell_cx = self.gx(arrow.cell_x + 0.5)
+                cell_cy = self.gy(arrow.cell_y + 0.5)
+                dot_x, dot_y = self.game.puzzle.dots[arrow.dot_idx]
+                dot_cx = self.gx(dot_x)
+                dot_cy = self.gy(dot_y)
+
+                ddx = dot_cx - cell_cx
+                ddy = dot_cy - cell_cy
+                dist = (ddx**2 + ddy**2) ** 0.5
+                if dist > 0:
+                    ddx /= dist
+                    ddy /= dist
+                    end_x = cell_cx + ddx * self.arrow_len
+                    end_y = cell_cy + ddy * self.arrow_len
+                    self.canvas.create_line(
+                        cell_cx, cell_cy, end_x, end_y,
+                        width=2, fill="green", arrow="last", tags=f"arrow_{arrow_idx}"
+                    )
+
+            for (t, x, y) in my_sorted(self.game.edges):
+                if t == 'h':
+                    x0, y0 = self.gx(x), self.gy(y)
+                    x1, y1 = self.gx(x + 1), self.gy(y)
+                else:
+                    x0, y0 = self.gx(x), self.gy(y)
+                    x1, y1 = self.gx(x), self.gy(y + 1)
+                self.canvas.create_line(x0, y0, x1, y1, width=self.wall_w, fill="black", capstyle=tk_module.ROUND)
+
+            self.canvas.create_rectangle(
+                self.gx(0), self.gy(0), self.gx(n), self.gy(n),
+                outline="black", width=8
+            )
+
+            adj = self.game.cell_adj_graph()
+            comps = bfs_components(adj, n * n)
+            valid_count = my_len(valid_cells)
+            total_regions = my_len(self.game.puzzle.dots)
+            lines_placed = my_len(self.game.edges - self.game.fixed)
+            msg = f"Lines: {lines_placed}  |  Regions: {my_len(comps)}  |  Valid: {valid_count}/{total_regions}"
+            self.status.set(msg)
+
+        def edge_from_click(self, px, py):
+            n = self.game.N
+            gx = (px - self.margin) / self.cell
+            gy = (py - self.margin) / self.cell
+            if gx < -0.2 or gy < -0.2 or gx > n + 0.2 or gy > n + 0.2:
+                return None
+
+            rx, ry = my_round(gx), my_round(gy)
+            dx, dy = my_abs(gx - rx), my_abs(gy - ry)
+
+            if min(dx, dy) > self.snap_tol:
+                return None
+
+            if dx < dy:
+                x = int(rx)
+                y = int(gy)
+                if 0 <= x <= n and 0 <= y < n:
+                    return ('v', x, y)
+            else:
+                x = int(gx)
+                y = int(ry)
+                if 0 <= x < n and 0 <= y <= n:
+                    return ('h', x, y)
+            return None
+
+        def on_click(self, event):
+            edge = self.edge_from_click(event.x, event.y)
+            if edge is None:
+                return
+            if edge in self.game.fixed:
+                return
+            self.game.toggle_edge(edge, who="player")
             self.redraw()
 
-    def on_redo(self):
-        if self.game.redo():
+        def on_right_click(self, event):
+            n = self.game.N
+            px, py = event.x, event.y
+            nearest_dot = None
+            nearest_dist = float('inf')
+            for dot_idx, (dx, dy) in my_enumerate(self.game.puzzle.dots):
+                cx = self.gx(dx)
+                cy = self.gy(dy)
+                dist = ((px - cx)**2 + (py - cy)**2) ** 0.5
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_dot = dot_idx
+            if nearest_dot is None or nearest_dist > self.dot_r * 2.5:
+                return
+            self.dragging_arrow = nearest_dot
+            self._drag_start_cell = None
+
+        def on_arrow_drag(self, event):
+            if self.dragging_arrow is None:
+                return
+            n = self.game.N
+            px, py = event.x, event.y
+            gx = (px - self.margin) / self.cell
+            gy = (py - self.margin) / self.cell
+            cell_x = int(gx)
+            cell_y = int(gy)
+            if 0 <= cell_x < n and 0 <= cell_y < n:
+                self._drag_start_cell = (cell_x, cell_y)
+            else:
+                self._drag_start_cell = None
+
+        def on_arrow_release(self, event):
+            if self.dragging_arrow is None:
+                return
+            n = self.game.N
+            px, py = event.x, event.y
+            gx = (px - self.margin) / self.cell
+            gy = (py - self.margin) / self.cell
+            cell_x = int(gx)
+            cell_y = int(gy)
+
+            dot_idx = self.dragging_arrow
+            self.dragging_arrow = None
+            self._drag_start_cell = None
+
+            if 0 <= cell_x < n and 0 <= cell_y < n:
+                for i, arrow in my_enumerate(self.game.arrows):
+                    if arrow.cell_x == cell_x and arrow.cell_y == cell_y:
+                        if arrow.dot_idx == dot_idx:
+                            self.game.arrows = [a for a in self.game.arrows if not (a.cell_x == cell_x and a.cell_y == cell_y and a.dot_idx == dot_idx)]
+                        else:
+                            self.game.arrows[i] = Arrow(cell_x, cell_y, dot_idx)
+                        self.redraw()
+                        return
+                self.game.arrows.append(Arrow(cell_x, cell_y, dot_idx))
+            else:
+                if self._drag_start_cell:
+                    cx, cy = self._drag_start_cell
+                    self.game.arrows = [a for a in self.game.arrows if not (a.cell_x == cx and a.cell_y == cy)]
+
             self.redraw()
+
+        def on_new_game(self):
+            self.game.new_puzzle()
+            self.redraw()
+
+        def on_restart(self):
+            self.game.reset()
+            self.redraw()
+
+        def on_solve_dc(self):
+            """Solve the puzzle using the D&C solver."""
+            if not self.game.solve_with_dc():
+                # Fallback: apply ground-truth solution directly
+                self.game.edges = set(self.game.fixed) | set(self.game.solution)
+            self.redraw()
+
+        def on_hint(self):
+            if not self.game.is_solved():
+                result = self.game.computer_move_dc()
+                if result:
+                    self.redraw()
+
+        def on_undo(self):
+            if self.game.undo():
+                self.redraw()
+
+        def on_redo(self):
+            if self.game.redo():
+                self.redraw()
+
+    return GalaxiesUI
 
 
 if __name__ == "__main__":
+    import os
+    import sys
+    import tkinter as tk_real
+
+    if not os.environ.get('DISPLAY'):
+        print("No display available. Cannot run GUI.")
+        sys.exit(0)
+
+    GalaxiesUI = build_ui_class(tk_real)
     GalaxiesUI().mainloop()

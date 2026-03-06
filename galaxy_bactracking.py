@@ -328,31 +328,21 @@ class PuzzleGenerator:
                     if o2 != o:
                         edges.add(('h', x, y + 1))
         return edges
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BACKTRACKING SOLVER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class BacktrackSolver:
-    """
-    Solves the Galaxies puzzle using pure backtracking.
+    def __init__(self, N, dots):
+        self.N = N
+        self.dots = dots
+        self.backtracks = 0
+        self.computations = 0
+        self.start_time = None
+        self.end_time = None
 
-    assign[cy][cx] = dot_index  (or -1 if unassigned)
-
-    Key formula — 180° symmetric cell:
-      Cell (cx, cy) has centre (cx+0.5, cy+0.5).
-      Its mirror about dot (dx, dy):
-        scx = 2*dx - cx - 1
-        scy = 2*dy - cy - 1
-      Both must be integers inside the grid.
-
-    ┌─────────────────────────────────────────────────────────┐
-    │  CONTRIBUTION MAP                                       │
-    │  Member 1 → solve()  +  _touches()                     │
-    │  Member 2 → _bt()    +  _pick()   +  _dot_order()      │
-    │  Member 3 → _sym()   +  _options()                     │
-    │  Member 4 → _connected()                               │
-    └─────────────────────────────────────────────────────────┘
-    """
     def _sym(self, cx, cy, di):
         dx, dy = self.dots[di]
         scx_f = 2*dx - cx - 1
@@ -363,7 +353,11 @@ class BacktrackSolver:
         if 0 <= scx < self.N and 0 <= scy < self.N:
             return scx, scy
         return None
-    
+
+    def _touches(self, cx, cy, di):
+        dx, dy = self.dots[di]
+        return cx <= dx <= cx+1 and cy <= dy <= cy+1
+
     def _options(self, cx, cy, assign):
         count = 0
         for di in range(len(self.dots)):
@@ -377,6 +371,114 @@ class BacktrackSolver:
                 if assign[scy][scx] in (-1, di):
                     count += 1
         return count
+
+    def _pick(self, assign):
+        best, bval = None, 999
+        for cy in range(self.N):
+            for cx in range(self.N):
+                if assign[cy][cx] != -1:
+                    continue
+                v = self._options(cx, cy, assign)
+                if v == 0:
+                    return cx, cy
+                if v < bval:
+                    bval, best = v, (cx, cy)
+        return best
+
+    def _dot_order(self, cx, cy, assign):
+        adj = set()
+        for dcx, dcy in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nx, ny = cx+dcx, cy+dcy
+            if 0 <= nx < self.N and 0 <= ny < self.N:
+                d = assign[ny][nx]
+                if d != -1:
+                    adj.add(d)
+        order = list(adj)
+        for di in range(len(self.dots)):
+            if di not in adj:
+                order.append(di)
+        return order
+
+    def _connected(self, assign):
+        N = self.N
+        for di in range(len(self.dots)):
+            region = [(cx, cy) for cy in range(N) for cx in range(N) if assign[cy][cx] == di]
+            if not region:
+                return False
+            rs = set(region)
+            vis = {region[0]}
+            q = deque([region[0]])
+            while q:
+                cx, cy = q.popleft()
+                for dcx, dcy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nb = (cx+dcx, cy+dcy)
+                    if nb in rs and nb not in vis:
+                        vis.add(nb); q.append(nb)
+            if len(vis) != len(rs):
+                return False
+        return True
+
+    def _bt(self, assign):
+        cell = self._pick(assign)
+        if cell is None:
+            return self._connected(assign)
+        cx, cy = cell
+        tried = set()
+        for di in self._dot_order(cx, cy, assign):
+            self.computations += 1
+            if di in tried:
+                continue
+            tried.add(di)
+            sym = self._sym(cx, cy, di)
+            if sym is not None:
+                scx, scy = sym
+                if assign[scy][scx] not in (-1, di):
+                    continue
+            else:
+                dx, dy = self.dots[di]
+                if abs(dx-(cx+0.5)) > 1e-9 or abs(dy-(cy+0.5)) > 1e-9:
+                    continue
+            assign[cy][cx] = di
+            sym_a = None
+            if sym is not None:
+                scx, scy = sym
+                if assign[scy][scx] == -1:
+                    assign[scy][scx] = di
+                    sym_a = (scx, scy)
+            if self._bt(assign):
+                return True
+            assign[cy][cx] = -1
+            if sym_a:
+                assign[sym_a[1]][sym_a[0]] = -1
+            self.backtracks += 1
+        return False
+
+    def solve(self):
+        N = self.N
+        assign = [[-1]*N for _ in range(N)]
+        for cy in range(N):
+            for cx in range(N):
+                for di in range(len(self.dots)):
+                    if self._touches(cx, cy, di) and assign[cy][cx] == -1:
+                        assign[cy][cx] = di
+        self.backtracks = 0
+        self.computations = 0
+        self.start_time = time.time()
+        result = self._bt(assign)
+        self.end_time = time.time()
+        
+        elapsed = self.end_time - self.start_time
+        print(f"\n{'='*60}")
+        print(f"Backtracking Solver Statistics")
+        print(f"{'='*60}")
+        print(f"Grid Size: {N}×{N}")
+        print(f"Number of Dots: {len(self.dots)}")
+        print(f"Computations: {self.computations}")
+        print(f"Backtracks: {self.backtracks}")
+        print(f"Time Taken: {elapsed:.6f} seconds")
+        print(f"{'='*60}\n")
+        
+        return assign if result else None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -512,7 +614,7 @@ class GameState:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI and EVENT HANDLING
+# UI — matches reference screenshots exactly
 # ══════════════════════════════════════════════════════════════════════════════
 
 class GalaxiesUI(tk.Tk):

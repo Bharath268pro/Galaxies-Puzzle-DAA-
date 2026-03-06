@@ -303,6 +303,9 @@ class GalaxiesModel:
         self.undo_stack = []
         self.redo_stack = []
         self.solution_edges = set()
+        # Stats tracking
+        self.computation_count = 0
+        self.last_solve_time = 0
     
     def new_puzzle(self):
         """Generate a new puzzle."""
@@ -678,6 +681,10 @@ class GalaxiesGame:
         Pick the edge with the highest greedy score.
         Uses: BFS for connected components (graph traversal)
         """
+        import time
+        start_time = time.time()
+        self.computation_count = 0
+        
         missing = list(self.solution - (self.edges - self.fixed))
         if not missing:
             return None
@@ -689,6 +696,7 @@ class GalaxiesGame:
             Greedy scoring function.
             Higher score = better edge to add.
             """
+            self.computation_count += 1
             score = 0
 
             # Score 1: Does adding this edge create more regions? (using BFS)
@@ -719,8 +727,10 @@ class GalaxiesGame:
         if scores:
             best_edge = scores[0][1]
             self.toggle_edge(best_edge, who="computer")
+            self.last_solve_time = time.time() - start_time
             return best_edge
 
+        self.last_solve_time = time.time() - start_time
         return None
 
 
