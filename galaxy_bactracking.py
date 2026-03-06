@@ -353,6 +353,30 @@ class BacktrackSolver:
     │  Member 4 → _connected()                               │
     └─────────────────────────────────────────────────────────┘
     """
+    def _sym(self, cx, cy, di):
+        dx, dy = self.dots[di]
+        scx_f = 2*dx - cx - 1
+        scy_f = 2*dy - cy - 1
+        if abs(scx_f - round(scx_f)) > 1e-9 or abs(scy_f - round(scy_f)) > 1e-9:
+            return None
+        scx, scy = int(round(scx_f)), int(round(scy_f))
+        if 0 <= scx < self.N and 0 <= scy < self.N:
+            return scx, scy
+        return None
+    
+    def _options(self, cx, cy, assign):
+        count = 0
+        for di in range(len(self.dots)):
+            sym = self._sym(cx, cy, di)
+            if sym is None:
+                dx, dy = self.dots[di]
+                if abs(dx-(cx+0.5)) < 1e-9 and abs(dy-(cy+0.5)) < 1e-9:
+                    count += 1
+            else:
+                scx, scy = sym
+                if assign[scy][scx] in (-1, di):
+                    count += 1
+        return count
 
 
 # ══════════════════════════════════════════════════════════════════════════════

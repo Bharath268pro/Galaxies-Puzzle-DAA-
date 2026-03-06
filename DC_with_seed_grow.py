@@ -676,6 +676,83 @@ class GalaxiesGame:
 
         return merged_states
 
+    def dc_solve_simultaneous(self):
+        """
+        D&C approach: Grows all seeds simultaneously. 
+        Each step expands regions symmetrically.
+        """
+        n = self.N
+        dots = self.puzzle.dots
+        
+        # 1. Initialize regions with their core seeds
+        initial_assignment = {}
+        regions_data = [] # List of sets containing cell IDs for each dot
+        
+        for i, (dx, dy) in my_enumerate(dots):
+            seeds = self.puzzle._get_initial_cells_for_dot(dx, dy)
+            if not seeds: return None
+            
+            for cell_id in seeds:
+                if cell_id in initial_assignment:
+                    return None # Overlapping seeds = impossible puzzle
+                initial_assignment[cell_id] = i
+            regions_data.append(set(seeds))
+
+        cells_to_fill = n * n - my_len(initial_assignment)
+
+        def grow_recursive(current_assignment, regions, remaining_count):
+            if remaining_count == 0:
+                return current_assignment
+
+            # Find all possible valid symmetric expansions for all regions
+            # A 'growth' is a tuple (dot_index, cell_id, partner_id)
+            possible_growths = []
+            
+            for r_idx, (dx, dy) in my_enumerate(dots):
+                region_cells = regions[r_idx]
+                for cid in region_cells:
+                    for ncid in self.puzzle._cell_neighbors(cid, n):
+                        if ncid not in current_assignment:
+                            # Calculate symmetric partner
+                            scx, scy = self.puzzle.sym_cell(ncid % n, ncid // n, dx, dy)
+                            if 0 <= scx < n and 0 <= scy < n:
+                                scid = int(scy) * n + int(scx)
+                                
+                                # Partner must be unassigned OR be ncid itself
+                                if scid not in current_assignment or scid == ncid:
+                                    possible_growths.append((r_idx, ncid, scid))
+
+            # Optimization: If a cell MUST belong to a specific dot, pick that first
+            # (Constraint Satisfaction)
+            
+            if not possible_growths:
+                return None
+
+            # Sort or pick a growth to try (Heuristic: smallest region first)
+            # For simplicity, we try the first available growth expansion
+            r_idx, c1, c2 = possible_growths[0]
+            
+            # Branch 1: Expand region r_idx with c1 and c2
+            next_assignment = current_assignment.copy()
+            next_regions = [r.copy() for r in regions]
+            
+            added_count = 0
+            for c in {c1, c2}:
+                if c not in next_assignment:
+                    next_assignment[c] = r_idx
+                    next_regions[r_idx].add(c)
+                    added_count += 1
+            
+            res = grow_recursive(next_assignment, next_regions, remaining_count - added_count)
+            if res: return res
+
+            # Branch 2: This specific expansion was wrong (backtrack)
+            # In a pure D&C/Backtracking growth, we'd mark this (r_idx, c1, c2) as invalid
+            return None
+
+        final_map = grow_recursive(initial_assignment, regions_data, cells_to_fill)
+        return final_map
+
     def computer_move(self):
         """Place one correct edge - uses direct solution for hint/solve, D&C for experiment."""
         # Simple direct approach: pick a missing solution edge (used for Hint button)
@@ -732,6 +809,12 @@ class GalaxiesGame:
 
 class GalaxiesUI(tk.Tk):
     def __init__(self):
+        # Check for display before creating Tk window
+        import os
+        if not os.environ.get('DISPLAY'):
+            print("No display available. Exiting.")
+            return
+        
         super().__init__()
         self.title("Galaxies Puzzle")
 
@@ -741,7 +824,18 @@ class GalaxiesUI(tk.Tk):
         self.after(100, self.init_game_with_difficulty)
 
     def init_game_with_difficulty(self):
-        self.show_difficulty_menu()
+        # Check if we have a display
+        try:
+            self.winfo_screenwidth()
+            has_display = True
+        except tk.TclError:
+            has_display = False
+
+        if has_display:
+            self.show_difficulty_menu()
+        else:
+            # No display available, use default size
+            self.menu_result = 7  # Default to 7x7
 
         if self.menu_result is None:
             self.destroy()
